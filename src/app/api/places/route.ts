@@ -18,7 +18,7 @@ const querySchema = z.object({
   q: z.string().trim().max(120).optional(),
   category: z.enum(businessCategories).optional(),
   status: z.enum(researchStatuses).optional(),
-  slaughter: z.enum(["hand", "machine", "unknown"]).optional(),
+  slaughter: z.enum(["hand", "machine", "mixed", "unknown"]).optional(),
   certified: z.enum(["true", "false"]).optional(),
   menu: z.enum(["full", "partial"]).optional(),
 });
@@ -36,13 +36,22 @@ export async function GET(request: Request) {
     certified: searchParams.get("certified") ?? undefined,
     menu: searchParams.get("menu") ?? undefined,
   });
-  if (!parsed.success || (parsed.data.lat == null) !== (parsed.data.lng == null)) {
-    return NextResponse.json({ error: "Invalid discovery filters." }, { status: 400 });
+  if (
+    !parsed.success ||
+    (parsed.data.lat == null) !== (parsed.data.lng == null)
+  ) {
+    return NextResponse.json(
+      { error: "Invalid discovery filters." },
+      { status: 400 },
+    );
   }
 
   const filters = {
     ...parsed.data,
-    certified: parsed.data.certified === undefined ? undefined : parsed.data.certified === "true",
+    certified:
+      parsed.data.certified === undefined
+        ? undefined
+        : parsed.data.certified === "true",
   };
 
   try {
@@ -60,19 +69,33 @@ export async function GET(request: Request) {
     const results = await listPublicBranches(filters, db);
     return NextResponse.json({
       results,
-      attribution: process.env.PLACES_PROVIDER === "google" ? "Powered by Google" : "Demo places data",
+      attribution:
+        process.env.PLACES_PROVIDER === "google"
+          ? "Powered by Google"
+          : "Demo places data",
     });
   } catch {
-    return NextResponse.json({ error: "Place discovery is temporarily unavailable." }, { status: 502 });
+    return NextResponse.json(
+      { error: "Place discovery is temporarily unavailable." },
+      { status: 502 },
+    );
   }
 }
 
 async function cachePlace(place: PlaceResult) {
   const existing = await db
-    .select({ branchId: externalPlaceIds.branchId, businessId: branches.businessId })
+    .select({
+      branchId: externalPlaceIds.branchId,
+      businessId: branches.businessId,
+    })
     .from(externalPlaceIds)
     .innerJoin(branches, eq(externalPlaceIds.branchId, branches.id))
-    .where(and(eq(externalPlaceIds.provider, place.provider), eq(externalPlaceIds.externalId, place.externalId)))
+    .where(
+      and(
+        eq(externalPlaceIds.provider, place.provider),
+        eq(externalPlaceIds.externalId, place.externalId),
+      ),
+    )
     .limit(1);
   if (existing[0]) {
     await db
@@ -91,33 +114,42 @@ async function cachePlace(place: PlaceResult) {
 
   const businessId = randomUUID();
   const branchId = randomUUID();
-  await db.insert(businesses).values({
-    id: businessId,
-    name: "Nearby business",
-    category: place.category,
-    website: null,
-    isDemo: place.provider === "demo",
-  }).onConflictDoNothing();
-  await db.insert(branches).values({
-    id: branchId,
-    businessId,
-    name: "Nearby",
-    address: "Address not available",
-    city: "Nearby",
-    lat: place.lat,
-    lng: place.lng,
-    phone: null,
-    website: null,
-    timezone: "UTC",
-    researchStatus: "not_researched",
-    providerName: place.name,
-    providerAddress: place.address,
-    providerCachedAt: new Date(),
-    isDemo: place.provider === "demo",
-  }).onConflictDoNothing();
-  await db.insert(externalPlaceIds).values({
-    branchId,
-    provider: place.provider,
-    externalId: place.externalId,
-  }).onConflictDoNothing();
+  await db
+    .insert(businesses)
+    .values({
+      id: businessId,
+      name: "Nearby business",
+      category: place.category,
+      website: null,
+      isDemo: place.provider === "demo",
+    })
+    .onConflictDoNothing();
+  await db
+    .insert(branches)
+    .values({
+      id: branchId,
+      businessId,
+      name: "Nearby",
+      address: "Address not available",
+      city: "Nearby",
+      lat: place.lat,
+      lng: place.lng,
+      phone: null,
+      website: null,
+      timezone: "UTC",
+      researchStatus: "not_researched",
+      providerName: place.name,
+      providerAddress: place.address,
+      providerCachedAt: new Date(),
+      isDemo: place.provider === "demo",
+    })
+    .onConflictDoNothing();
+  await db
+    .insert(externalPlaceIds)
+    .values({
+      branchId,
+      provider: place.provider,
+      externalId: place.externalId,
+    })
+    .onConflictDoNothing();
 }

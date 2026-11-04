@@ -1,7 +1,14 @@
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { branchFollows, branches, corrections, evidenceDocuments, favorites, sources } from "@/db/schema";
+import {
+  branchFollows,
+  branches,
+  corrections,
+  evidenceDocuments,
+  favorites,
+  sources,
+} from "@/db/schema";
 import { storeEvidenceUpload } from "@/lib/providers/storage/local";
 import type { Actor } from "./actor";
 import { requireAdminActor, requireActorUser } from "./actor";
@@ -17,19 +24,38 @@ const correctionSchema = z.object({
 export async function submitCorrection(
   actor: Actor,
   branchId: string,
-  input: { body: string; url?: string | null; isOwnerSubmission?: boolean; file?: File | null },
+  input: {
+    body: string;
+    url?: string | null;
+    isOwnerSubmission?: boolean;
+    file?: File | null;
+  },
   database: typeof defaultDb = defaultDb,
 ) {
   const user = await requireActorUser(actor, database);
-  const rate = await consumeRateLimit(database, `correction:${user.id}`, 5, 86400_000);
-  if (!rate.allowed) throw new Error("Correction submission rate limit exceeded.");
+  const rate = await consumeRateLimit(
+    database,
+    `correction:${user.id}`,
+    5,
+    86400_000,
+  );
+  if (!rate.allowed)
+    throw new Error("Correction submission rate limit exceeded.");
   const parsed = correctionSchema.parse(input);
-  const [branch] = await database.select({ id: branches.id }).from(branches).where(eq(branches.id, branchId)).limit(1);
+  const [branch] = await database
+    .select({ id: branches.id })
+    .from(branches)
+    .where(eq(branches.id, branchId))
+    .limit(1);
   if (!branch) throw new Error("Branch not found.");
   let evidenceDocumentId: string | undefined;
   if (input.file && input.file.size) {
     const bytes = new Uint8Array(await input.file.arrayBuffer());
-    const stored = await storeEvidenceUpload(bytes, input.file.type, input.file.name);
+    const stored = await storeEvidenceUpload(
+      bytes,
+      input.file.type,
+      input.file.name,
+    );
     const [source] = await database
       .insert(sources)
       .values({
@@ -85,8 +111,14 @@ export async function reviewCorrection(
       reviewedBy: admin.id,
       updatedAt: new Date(),
     })
-    .where(and(eq(corrections.id, correctionId), eq(corrections.status, "open")))
-    .returning({ id: corrections.id, userId: corrections.userId, branchId: corrections.branchId });
+    .where(
+      and(eq(corrections.id, correctionId), eq(corrections.status, "open")),
+    )
+    .returning({
+      id: corrections.id,
+      userId: corrections.userId,
+      branchId: corrections.branchId,
+    });
   if (!row) throw new Error("Open correction not found.");
   await writeAudit(database, {
     actorUserId: admin.id,
@@ -99,7 +131,11 @@ export async function reviewCorrection(
   return row;
 }
 
-export async function followBranch(actor: Actor, branchId: string, database: typeof defaultDb = defaultDb) {
+export async function followBranch(
+  actor: Actor,
+  branchId: string,
+  database: typeof defaultDb = defaultDb,
+) {
   const user = await requireActorUser(actor, database);
   const [row] = await database
     .insert(branchFollows)
@@ -109,7 +145,11 @@ export async function followBranch(actor: Actor, branchId: string, database: typ
   return { followed: Boolean(row) };
 }
 
-export async function toggleFavorite(actor: Actor, branchId: string, database: typeof defaultDb = defaultDb) {
+export async function toggleFavorite(
+  actor: Actor,
+  branchId: string,
+  database: typeof defaultDb = defaultDb,
+) {
   const user = await requireActorUser(actor, database);
   const [existing] = await database
     .select({ id: favorites.id })
@@ -120,6 +160,9 @@ export async function toggleFavorite(actor: Actor, branchId: string, database: t
     await database.delete(favorites).where(eq(favorites.id, existing.id));
     return { favorited: false };
   }
-  await database.insert(favorites).values({ userId: user.id, branchId }).onConflictDoNothing();
+  await database
+    .insert(favorites)
+    .values({ userId: user.id, branchId })
+    .onConflictDoNothing();
   return { favorited: true };
 }

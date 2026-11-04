@@ -9,16 +9,28 @@ export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   if (!hasValidBrowserOrigin(request)) {
-    return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
+    return NextResponse.json(
+      { error: "Invalid request origin." },
+      { status: 403 },
+    );
   }
   if (Number(request.headers.get("content-length") ?? 0) > 1_000_000) {
     return NextResponse.json({ error: "Request too large." }, { status: 413 });
   }
   const form = await request.formData().catch(() => null);
-  if (!form) return NextResponse.json({ error: "Expected a form-encoded webhook." }, { status: 400 });
+  if (!form)
+    return NextResponse.json(
+      { error: "Expected a form-encoded webhook." },
+      { status: 400 },
+    );
   const signature = readSignature(form);
-  if (!verifyMailgun(signature.timestamp, signature.token, signature.signature)) {
-    return NextResponse.json({ error: "Invalid webhook signature." }, { status: 401 });
+  if (
+    !verifyMailgun(signature.timestamp, signature.token, signature.signature)
+  ) {
+    return NextResponse.json(
+      { error: "Invalid webhook signature." },
+      { status: 401 },
+    );
   }
 
   const headerValues = readMessageHeaders(form.get("message-headers"));
@@ -34,7 +46,10 @@ export async function POST(request: Request) {
     stringValue(form.get("body")) ??
     "";
   if (!from || !to || !text) {
-    return NextResponse.json({ error: "Missing inbound email fields." }, { status: 400 });
+    return NextResponse.json(
+      { error: "Missing inbound email fields." },
+      { status: 400 },
+    );
   }
   try {
     const queue = await getRuntimeQueue();
@@ -57,7 +72,10 @@ export async function POST(request: Request) {
     );
     return NextResponse.json({ ok: true, duplicate: result.duplicate });
   } catch {
-    return NextResponse.json({ error: "Unable to process inbound email." }, { status: 400 });
+    return NextResponse.json(
+      { error: "Unable to process inbound email." },
+      { status: 400 },
+    );
   }
 }
 
@@ -85,22 +103,40 @@ function readSignature(form: FormData) {
   };
 }
 
-function verifyMailgun(timestamp: string | null, token: string | null, signature: string | null) {
+function verifyMailgun(
+  timestamp: string | null,
+  token: string | null,
+  signature: string | null,
+) {
   const secret = process.env.MAILGUN_WEBHOOK_SIGNING_KEY;
-  if (!secret || !timestamp || !token || !signature || !/^\d{10,13}$/.test(timestamp)) return false;
+  if (
+    !secret ||
+    !timestamp ||
+    !token ||
+    !signature ||
+    !/^\d{10,13}$/.test(timestamp)
+  )
+    return false;
   const timestampMs = Number(timestamp) * (timestamp.length === 10 ? 1000 : 1);
   if (Math.abs(Date.now() - timestampMs) > 5 * 60 * 1000) return false;
-  const expected = createHmac("sha256", secret).update(`${timestamp}${token}`).digest("hex");
+  const expected = createHmac("sha256", secret)
+    .update(`${timestamp}${token}`)
+    .digest("hex");
   const expectedBytes = Buffer.from(expected, "hex");
   const signatureBytes = Buffer.from(signature, "hex");
-  return expectedBytes.length === signatureBytes.length && timingSafeEqual(expectedBytes, signatureBytes);
+  return (
+    expectedBytes.length === signatureBytes.length &&
+    timingSafeEqual(expectedBytes, signatureBytes)
+  );
 }
 
 function readMessageHeaders(value: FormDataEntryValue | null) {
   if (typeof value !== "string") return {};
   try {
     const headers = JSON.parse(value) as Array<[string, string]>;
-    return Object.fromEntries(headers.map(([key, val]) => [key.toLowerCase(), val]));
+    return Object.fromEntries(
+      headers.map(([key, val]) => [key.toLowerCase(), val]),
+    );
   } catch {
     return {};
   }

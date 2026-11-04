@@ -11,6 +11,8 @@ export class DemoGeocoder implements Geocoder {
   async search(query: string) {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return [demoTowns[0]!];
-    return demoTowns.filter((town) => town.label.toLowerCase().includes(normalized));
+    return demoTowns.filter((town) =>
+      town.label.toLowerCase().includes(normalized),
+    );
   }
 }

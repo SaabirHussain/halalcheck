@@ -9,5 +9,7 @@ export type EmailMessage = {
 };
 
 export interface EmailProvider {
-  send(message: EmailMessage): Promise<{ providerMessageId: string; captured: boolean }>;
+  send(
+    message: EmailMessage,
+  ): Promise<{ providerMessageId: string; captured: boolean }>;
 }

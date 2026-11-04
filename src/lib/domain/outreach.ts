@@ -21,23 +21,94 @@ import { writeAudit } from "./audit";
 type Database = typeof defaultDb;
 
 export const researchQuestions = [
-  { key: "chicken_supplier", prompt: "Which supplier provides your chicken?", product: "chicken", attribute: "supplier" },
-  { key: "beef_supplier", prompt: "Which supplier provides your beef?", product: "beef", attribute: "supplier" },
-  { key: "lamb_supplier", prompt: "Which supplier provides your lamb?", product: "lamb", attribute: "supplier" },
-  { key: "chicken_slaughter", prompt: "Is your chicken hand- or machine-slaughtered?", product: "chicken", attribute: "slaughter_method" },
-  { key: "beef_slaughter", prompt: "Is your beef hand- or machine-slaughtered?", product: "beef", attribute: "slaughter_method" },
-  { key: "certifier", prompt: "Which organization certifies the relevant products, and does coverage include this branch?", product: "general", attribute: "certifier" },
-  { key: "certificate", prompt: "Can you share a current certificate or supplier documentation?", product: "general", attribute: "certificate" },
-  { key: "menu_coverage", prompt: "Are all menu items halal, or only selected items?", product: "menu", attribute: "menu_coverage" },
-  { key: "separate_preparation", prompt: "Are halal items prepared separately from non-halal items?", product: "kitchen", attribute: "separate_preparation" },
-  { key: "shared_grill", prompt: "Are grills shared with non-halal items?", product: "kitchen", attribute: "shared_grill" },
-  { key: "shared_fryer", prompt: "Are fryers shared with non-halal items?", product: "kitchen", attribute: "shared_fryer" },
-  { key: "shared_utensils", prompt: "Are utensils shared with non-halal items?", product: "kitchen", attribute: "shared_utensils" },
-  { key: "shared_storage", prompt: "Is storage shared with non-halal items?", product: "kitchen", attribute: "shared_storage" },
+  {
+    key: "chicken_supplier",
+    prompt: "Which supplier provides your chicken?",
+    product: "chicken",
+    attribute: "supplier",
+  },
+  {
+    key: "beef_supplier",
+    prompt: "Which supplier provides your beef?",
+    product: "beef",
+    attribute: "supplier",
+  },
+  {
+    key: "lamb_supplier",
+    prompt: "Which supplier provides your lamb?",
+    product: "lamb",
+    attribute: "supplier",
+  },
+  {
+    key: "chicken_slaughter",
+    prompt: "Is your chicken hand- or machine-slaughtered?",
+    product: "chicken",
+    attribute: "slaughter_method",
+  },
+  {
+    key: "beef_slaughter",
+    prompt: "Is your beef hand- or machine-slaughtered?",
+    product: "beef",
+    attribute: "slaughter_method",
+  },
+  {
+    key: "certifier",
+    prompt:
+      "Which organization certifies the relevant products, and does coverage include this branch?",
+    product: "general",
+    attribute: "certifier",
+  },
+  {
+    key: "certificate",
+    prompt: "Can you share a current certificate or supplier documentation?",
+    product: "general",
+    attribute: "certificate",
+  },
+  {
+    key: "menu_coverage",
+    prompt: "Are all menu items halal, or only selected items?",
+    product: "menu",
+    attribute: "menu_coverage",
+  },
+  {
+    key: "separate_preparation",
+    prompt: "Are halal items prepared separately from non-halal items?",
+    product: "kitchen",
+    attribute: "separate_preparation",
+  },
+  {
+    key: "shared_grill",
+    prompt: "Are grills shared with non-halal items?",
+    product: "kitchen",
+    attribute: "shared_grill",
+  },
+  {
+    key: "shared_fryer",
+    prompt: "Are fryers shared with non-halal items?",
+    product: "kitchen",
+    attribute: "shared_fryer",
+  },
+  {
+    key: "shared_utensils",
+    prompt: "Are utensils shared with non-halal items?",
+    product: "kitchen",
+    attribute: "shared_utensils",
+  },
+  {
+    key: "shared_storage",
+    prompt: "Is storage shared with non-halal items?",
+    product: "kitchen",
+    attribute: "shared_storage",
+  },
 ] as const;
 
 export function openQuestionKeysForClaims(
-  knownClaims: Array<{ product: string; attribute: string; valueEnum: string | null; value: string }>,
+  knownClaims: Array<{
+    product: string;
+    attribute: string;
+    valueEnum: string | null;
+    value: string;
+  }>,
 ) {
   return researchQuestions.filter((question) => {
     const answers = knownClaims.filter(
@@ -58,7 +129,8 @@ export async function createOutreachDraft(
   queue?: JobQueue,
   options: { vagueSignals?: string[] } = {},
 ) {
-  if (!["worker", "system", "admin"].includes(actor.type)) throw new Error("Automation access required.");
+  if (!["worker", "system", "admin"].includes(actor.type))
+    throw new Error("Automation access required.");
   if (actor.type === "admin") await requireAdminActor(actor, database);
   const [investigation] = await database
     .select({
@@ -76,7 +148,8 @@ export async function createOutreachDraft(
     .innerJoin(businesses, eq(branches.businessId, businesses.id))
     .where(eq(investigations.id, investigationId))
     .limit(1);
-  if (!investigation || !investigation.isActive) throw new Error("Active investigation not found.");
+  if (!investigation || !investigation.isActive)
+    throw new Error("Active investigation not found.");
 
   const currentClaims = await database
     .select({
@@ -86,10 +159,20 @@ export async function createOutreachDraft(
       valueEnum: claims.valueEnum,
     })
     .from(claims)
-    .where(and(eq(claims.branchId, investigation.branchId), inArray(claims.status, ["published", "proposed"])));
+    .where(
+      and(
+        eq(claims.branchId, investigation.branchId),
+        inArray(claims.status, ["published", "proposed"]),
+      ),
+    );
   const openQuestions = openQuestionKeysForClaims(currentClaims);
   if (!openQuestions.length) {
-    if (queue) await queue.enqueue("investigation.evidence_review", { investigationId }, { singletonKey: `evidence_review:${investigationId}` });
+    if (queue)
+      await queue.enqueue(
+        "investigation.evidence_review",
+        { investigationId },
+        { singletonKey: `evidence_review:${investigationId}` },
+      );
     return { status: "reviewing_evidence" as const, messageId: null };
   }
   const [endpoint] = await database
@@ -109,7 +192,9 @@ export async function createOutreachDraft(
         .update(investigations)
         .set({
           status: "reviewing_evidence",
-          stageDetail: investigation.stageDetail?.startsWith("Website fetch failed:")
+          stageDetail: investigation.stageDetail?.startsWith(
+            "Website fetch failed:",
+          )
             ? `${investigation.stageDetail} No usable business contact found.`
             : "No usable business contact found.",
           updatedAt: new Date(),
@@ -157,12 +242,23 @@ export async function createOutreachDraft(
       .where(eq(outreachThreads.investigationId, investigationId))
       .limit(1);
     if (!thread) throw new Error("Could not create outreach thread.");
-    return createOutreachDraft(actor, investigationId, database, queue, options);
+    return createOutreachDraft(
+      actor,
+      investigationId,
+      database,
+      queue,
+      options,
+    );
   }
   const [prior] = await database
     .select({ sequence: outreachMessages.sequence })
     .from(outreachMessages)
-    .where(and(eq(outreachMessages.threadId, threadId), eq(outreachMessages.direction, "outbound")))
+    .where(
+      and(
+        eq(outreachMessages.threadId, threadId),
+        eq(outreachMessages.direction, "outbound"),
+      ),
+    )
     .orderBy(desc(outreachMessages.sequence))
     .limit(1);
   const sequence = (prior?.sequence ?? 0) + 1;
@@ -215,7 +311,9 @@ export async function createOutreachDraft(
       .update(investigations)
       .set({
         status: "awaiting_outreach_approval",
-        stageDetail: investigation.stageDetail?.startsWith("Website fetch failed:")
+        stageDetail: investigation.stageDetail?.startsWith(
+          "Website fetch failed:",
+        )
           ? `${investigation.stageDetail} Outreach draft awaits review.`
           : "Outbound draft awaits review.",
         updatedAt: new Date(),
@@ -223,7 +321,10 @@ export async function createOutreachDraft(
       .where(eq(investigations.id, investigationId));
     await tx
       .update(branches)
-      .set({ researchStatus: "awaiting_outreach_approval", updatedAt: new Date() })
+      .set({
+        researchStatus: "awaiting_outreach_approval",
+        updatedAt: new Date(),
+      })
       .where(eq(branches.id, investigation.branchId));
     await writeAudit(tx, {
       actorType: actor.type === "admin" ? "admin" : actor.type,
@@ -251,9 +352,17 @@ export async function createOutreachDraft(
       entityType: "outreach_message",
       entityId: message.id,
     });
-    if (queue) await queue.enqueue("outreach.send", { messageId: message.id }, { singletonKey: `outreach:${message.id}` });
+    if (queue)
+      await queue.enqueue(
+        "outreach.send",
+        { messageId: message.id },
+        { singletonKey: `outreach:${message.id}` },
+      );
   }
-  return { status: "awaiting_outreach_approval" as const, messageId: message?.id ?? null };
+  return {
+    status: "awaiting_outreach_approval" as const,
+    messageId: message?.id ?? null,
+  };
 }
 
 export async function approveOutreachMessage(
@@ -268,7 +377,12 @@ export async function approveOutreachMessage(
     const [draft] = await tx
       .select({ id: outreachMessages.id, threadId: outreachMessages.threadId })
       .from(outreachMessages)
-      .where(and(eq(outreachMessages.id, messageId), eq(outreachMessages.status, "draft")))
+      .where(
+        and(
+          eq(outreachMessages.id, messageId),
+          eq(outreachMessages.status, "draft"),
+        ),
+      )
       .limit(1);
     if (!draft) throw new Error("Draft message not found or already reviewed.");
     const [thread] = await tx
@@ -287,7 +401,9 @@ export async function approveOutreachMessage(
     if (!endpoint) throw new Error("Outreach contact endpoint not found.");
     if (endpoint.status !== "approved") {
       if (!options.approveContact) {
-        throw new Error("Approve the contact endpoint before approving this outreach draft.");
+        throw new Error(
+          "Approve the contact endpoint before approving this outreach draft.",
+        );
       }
       await tx
         .update(contactEndpoints)
@@ -313,7 +429,11 @@ export async function approveOutreachMessage(
       entityId: messageId,
     });
   });
-  await queue.enqueue("outreach.send", { messageId }, { singletonKey: `outreach:${messageId}` });
+  await queue.enqueue(
+    "outreach.send",
+    { messageId },
+    { singletonKey: `outreach:${messageId}` },
+  );
 }
 
 export async function retryFailedOutreachSend(
@@ -325,9 +445,22 @@ export async function retryFailedOutreachSend(
   const admin = await requireAdminActor(actor, database);
   const [message] = await database
     .update(outreachMessages)
-    .set({ status: "approved", approvedBy: admin.id, error: null, updatedAt: new Date() })
-    .where(and(eq(outreachMessages.id, messageId), eq(outreachMessages.status, "failed")))
-    .returning({ id: outreachMessages.id, threadId: outreachMessages.threadId });
+    .set({
+      status: "approved",
+      approvedBy: admin.id,
+      error: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(outreachMessages.id, messageId),
+        eq(outreachMessages.status, "failed"),
+      ),
+    )
+    .returning({
+      id: outreachMessages.id,
+      threadId: outreachMessages.threadId,
+    });
   if (!message) throw new Error("Failed outreach message not found.");
   const [thread] = await database
     .select({ investigationId: outreachThreads.investigationId })
@@ -338,7 +471,10 @@ export async function retryFailedOutreachSend(
   if (thread) {
     await database
       .update(investigations)
-      .set({ stageDetail: "Retrying a failed outreach send.", updatedAt: new Date() })
+      .set({
+        stageDetail: "Retrying a failed outreach send.",
+        updatedAt: new Date(),
+      })
       .where(eq(investigations.id, thread.investigationId));
   }
   await writeAudit(database, {
@@ -364,7 +500,12 @@ export async function rejectOutreachMessage(
   const [message] = await database
     .update(outreachMessages)
     .set({ status: "cancelled", updatedAt: new Date() })
-    .where(and(eq(outreachMessages.id, messageId), eq(outreachMessages.status, "draft")))
+    .where(
+      and(
+        eq(outreachMessages.id, messageId),
+        eq(outreachMessages.status, "draft"),
+      ),
+    )
     .returning({ id: outreachMessages.id });
   if (!message) throw new Error("Draft message not found or already reviewed.");
   await writeAudit(database, {
@@ -390,14 +531,20 @@ export async function setOutreachSettings(
 ) {
   const admin = await requireAdminActor(actor, database);
   for (const value of Object.values(settings)) {
-    if (typeof value === "number" && (!Number.isInteger(value) || value < 0 || value > 30)) {
+    if (
+      typeof value === "number" &&
+      (!Number.isInteger(value) || value < 0 || value > 30)
+    ) {
       throw new Error("Outreach limits must be integers between 0 and 30.");
     }
   }
   await database
     .insert(outreachSettings)
     .values({ id: 1, ...settings })
-    .onConflictDoUpdate({ target: outreachSettings.id, set: { ...settings, updatedAt: new Date() } });
+    .onConflictDoUpdate({
+      target: outreachSettings.id,
+      set: { ...settings, updatedAt: new Date() },
+    });
   await writeAudit(database, {
     actorUserId: admin.id,
     actorType: "admin",
@@ -431,13 +578,20 @@ export async function approveContactEndpoint(
 
 export async function addSuppression(
   actor: Actor,
-  input: { value: string; kind: "email" | "domain"; reason: "manual" | "opt_out" | "bounce" | "refusal"; note?: string },
+  input: {
+    value: string;
+    kind: "email" | "domain";
+    reason: "manual" | "opt_out" | "bounce" | "refusal";
+    note?: string;
+  },
   database: Database = defaultDb,
 ) {
   const admin = await requireAdminActor(actor, database);
   const normalized = input.value.trim().toLowerCase();
-  if (input.kind === "email" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalized)) throw new Error("Valid email required.");
-  if (input.kind === "domain" && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(normalized)) throw new Error("Valid domain required.");
+  if (input.kind === "email" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalized))
+    throw new Error("Valid email required.");
+  if (input.kind === "domain" && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(normalized))
+    throw new Error("Valid domain required.");
   const [row] = await database
     .insert(suppressions)
     .values({
@@ -478,21 +632,38 @@ export function nextBusinessWindow(
 ) {
   const [openText, closeText] = hours.split("-");
   const [openHour, openMinute] = (openText ?? "09:00").split(":").map(Number);
-  const [closeHour, closeMinute] = (closeText ?? "17:00").split(":").map(Number);
-  const allowedDays = new Set(days.split(",").flatMap((range) => {
-    const [start, end = start] = range.split("-").map(Number);
-    return Array.from({ length: (end ?? 0) - (start ?? 0) + 1 }, (_, offset) => (start ?? 1) + offset);
-  }));
+  const [closeHour, closeMinute] = (closeText ?? "17:00")
+    .split(":")
+    .map(Number);
+  const allowedDays = new Set(
+    days.split(",").flatMap((range) => {
+      const [start, end = start] = range.split("-").map(Number);
+      return Array.from(
+        { length: (end ?? 0) - (start ?? 0) + 1 },
+        (_, offset) => (start ?? 1) + offset,
+      );
+    }),
+  );
   for (let minute = 0; minute <= 8 * 24 * 60; minute += 1) {
     const candidate = new Date(now.getTime() + minute * 60_000);
     const parts = localParts(candidate, timezone);
-    const weekdays: Record<string, number> = { Sun: 7, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    const weekdays: Record<string, number> = {
+      Sun: 7,
+      Mon: 1,
+      Tue: 2,
+      Wed: 3,
+      Thu: 4,
+      Fri: 5,
+      Sat: 6,
+    };
     const weekday = weekdays[parts.weekday ?? ""] ?? 0;
     const hour = Number(parts.hour);
     const currentMinute = Number(parts.minute);
     const inHours =
-      (hour > (openHour ?? 9) || (hour === openHour && currentMinute >= (openMinute ?? 0))) &&
-      (hour < (closeHour ?? 17) || (hour === closeHour && currentMinute < (closeMinute ?? 0)));
+      (hour > (openHour ?? 9) ||
+        (hour === openHour && currentMinute >= (openMinute ?? 0))) &&
+      (hour < (closeHour ?? 17) ||
+        (hour === closeHour && currentMinute < (closeMinute ?? 0)));
     if (allowedDays.has(weekday) && inHours) return candidate;
   }
   throw new Error("No business hour found in scheduling horizon.");
@@ -504,11 +675,17 @@ export async function sendOutreach(
   database: Database = defaultDb,
   queue?: JobQueue,
 ) {
-  if (actor.type !== "worker" && actor.type !== "system") throw new Error("Worker access required.");
+  if (actor.type !== "worker" && actor.type !== "system")
+    throw new Error("Worker access required.");
   const [message] = await database
     .update(outreachMessages)
     .set({ status: "sending", updatedAt: new Date() })
-    .where(and(eq(outreachMessages.id, messageId), inArray(outreachMessages.status, ["approved", "scheduled"])))
+    .where(
+      and(
+        eq(outreachMessages.id, messageId),
+        inArray(outreachMessages.status, ["approved", "scheduled"]),
+      ),
+    )
     .returning();
   if (!message) return { sent: false, reason: "already-claimed" };
   const [thread] = await database
@@ -517,60 +694,104 @@ export async function sendOutreach(
     .where(eq(outreachThreads.id, message.threadId))
     .limit(1);
   const [endpoint] = thread?.contactEndpointId
-    ? await database.select().from(contactEndpoints).where(eq(contactEndpoints.id, thread.contactEndpointId)).limit(1)
+    ? await database
+        .select()
+        .from(contactEndpoints)
+        .where(eq(contactEndpoints.id, thread.contactEndpointId))
+        .limit(1)
     : [];
   const [settings] = await database.select().from(outreachSettings).limit(1);
   if (!thread || !endpoint || thread.status !== "open") {
-    await database.update(outreachMessages).set({ status: "cancelled" }).where(eq(outreachMessages.id, messageId));
+    await database
+      .update(outreachMessages)
+      .set({ status: "cancelled" })
+      .where(eq(outreachMessages.id, messageId));
     return { sent: false, reason: "thread-not-sendable" };
   }
   const [investigation] = await database
-    .select({ isActive: investigations.isActive, paused: investigations.paused })
+    .select({
+      isActive: investigations.isActive,
+      paused: investigations.paused,
+    })
     .from(investigations)
     .where(eq(investigations.id, thread.investigationId))
     .limit(1);
   if (!investigation?.isActive) {
-    await database.update(outreachMessages).set({ status: "cancelled", updatedAt: new Date() }).where(eq(outreachMessages.id, messageId));
+    await database
+      .update(outreachMessages)
+      .set({ status: "cancelled", updatedAt: new Date() })
+      .where(eq(outreachMessages.id, messageId));
     return { sent: false, reason: "investigation-inactive" };
   }
   if (investigation.paused) {
-    return reschedule(database, queue, messageId, new Date(Date.now() + 60 * 60 * 1000), "investigation-paused");
+    return reschedule(
+      database,
+      queue,
+      messageId,
+      new Date(Date.now() + 60 * 60 * 1000),
+      "investigation-paused",
+    );
   }
-  if (settings?.paused) return reschedule(database, queue, messageId, new Date(Date.now() + 60 * 60 * 1000), "paused");
+  if (settings?.paused)
+    return reschedule(
+      database,
+      queue,
+      messageId,
+      new Date(Date.now() + 60 * 60 * 1000),
+      "paused",
+    );
   const normalized = endpoint.value.trim().toLowerCase();
   const domain = normalized.split("@").pop() ?? normalized;
   const blocked = await database
     .select({ id: suppressions.id })
     .from(suppressions)
-    .where(
-      and(
-        eq(suppressions.valueNormalized, normalized),
-      ),
-    )
+    .where(and(eq(suppressions.valueNormalized, normalized)))
     .limit(1);
   const blockedDomain = await database
     .select({ id: suppressions.id })
     .from(suppressions)
-    .where(and(eq(suppressions.valueNormalized, domain), eq(suppressions.kind, "domain")))
+    .where(
+      and(
+        eq(suppressions.valueNormalized, domain),
+        eq(suppressions.kind, "domain"),
+      ),
+    )
     .limit(1);
-  if (blocked.length || blockedDomain.length || endpoint.status !== "approved") {
-    await database.update(outreachMessages).set({ status: "cancelled" }).where(eq(outreachMessages.id, messageId));
+  if (
+    blocked.length ||
+    blockedDomain.length ||
+    endpoint.status !== "approved"
+  ) {
+    await database
+      .update(outreachMessages)
+      .set({ status: "cancelled" })
+      .where(eq(outreachMessages.id, messageId));
     return { sent: false, reason: "suppressed-or-unapproved" };
   }
   const [branch] = await database
-    .select({ id: branches.id, businessId: branches.businessId, timezone: branches.timezone })
+    .select({
+      id: branches.id,
+      businessId: branches.businessId,
+      timezone: branches.timezone,
+    })
     .from(branches)
     .where(eq(branches.id, thread.branchId))
     .limit(1);
   if (!branch) throw new Error("Branch not found.");
-  const branchIds = await database.select({ id: branches.id }).from(branches).where(eq(branches.businessId, branch.businessId));
+  const branchIds = await database
+    .select({ id: branches.id })
+    .from(branches)
+    .where(eq(branches.businessId, branch.businessId));
   const branchIdList = branchIds.map((item) => item.id);
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const outbound = branchIdList.length
     ? await database
         .select({ sentAt: outreachMessages.sentAt })
         .from(outreachMessages)
-        .innerJoin(outreachThreads, eq(outreachMessages.threadId, outreachThreads.id))
+        .innerJoin(
+          outreachThreads,
+          eq(outreachMessages.threadId, outreachThreads.id),
+        )
         .where(
           and(
             inArray(outreachThreads.branchId, branchIdList),
@@ -582,18 +803,45 @@ export async function sendOutreach(
     : [];
   const maxPerBusiness = settings?.maxMessagesPerBusiness30d ?? 4;
   if (outbound.length >= maxPerBusiness) {
-    await database.update(outreachMessages).set({ status: "failed", error: "Business contact limit reached." }).where(eq(outreachMessages.id, messageId));
+    await database
+      .update(outreachMessages)
+      .set({ status: "failed", error: "Business contact limit reached." })
+      .where(eq(outreachMessages.id, messageId));
     return { sent: false, reason: "business-limit" };
   }
-  const lastSent = outbound.map((item) => item.sentAt).filter((date): date is Date => !!date).sort((a, b) => b.getTime() - a.getTime())[0];
-  if (lastSent && Date.now() - lastSent.getTime() < (settings?.minDaysBetweenMessages ?? 3) * 86400_000) {
-    return reschedule(database, queue, messageId, new Date(lastSent.getTime() + (settings?.minDaysBetweenMessages ?? 3) * 86400_000), "minimum-gap");
+  const lastSent = outbound
+    .map((item) => item.sentAt)
+    .filter((date): date is Date => !!date)
+    .sort((a, b) => b.getTime() - a.getTime())[0];
+  if (
+    lastSent &&
+    Date.now() - lastSent.getTime() <
+      (settings?.minDaysBetweenMessages ?? 3) * 86400_000
+  ) {
+    return reschedule(
+      database,
+      queue,
+      messageId,
+      new Date(
+        lastSent.getTime() +
+          (settings?.minDaysBetweenMessages ?? 3) * 86400_000,
+      ),
+      "minimum-gap",
+    );
   }
   const scheduledFor = nextBusinessWindow(new Date(), branch.timezone);
   if (scheduledFor.getTime() > Date.now() + 60_000) {
-    return reschedule(database, queue, messageId, scheduledFor, "business-hours");
+    return reschedule(
+      database,
+      queue,
+      messageId,
+      scheduledFor,
+      "business-hours",
+    );
   }
-  const [fromAddress] = [process.env.OUTREACH_FROM_ADDRESS ?? "research@demo.halalcheck.test"];
+  const [fromAddress] = [
+    process.env.OUTREACH_FROM_ADDRESS ?? "research@demo.halalcheck.test",
+  ];
   const [threadRecord] = await database
     .select({ token: outreachThreads.threadToken })
     .from(outreachThreads)
@@ -610,7 +858,8 @@ export async function sendOutreach(
       relatedMessageId: message.id,
       headers: {
         "Reply-To": `reply+${threadRecord!.token}@${process.env.OUTREACH_REPLY_DOMAIN ?? "demo.halalcheck.test"}`,
-        "Message-ID": message.messageIdHeader ?? `<${message.id}@demo.halalcheck.test>`,
+        "Message-ID":
+          message.messageIdHeader ?? `<${message.id}@demo.halalcheck.test>`,
         "List-Unsubscribe": `<mailto:unsubscribe@${process.env.OUTREACH_REPLY_DOMAIN ?? "demo.halalcheck.test"}?subject=unsubscribe>`,
       },
     });
@@ -623,7 +872,10 @@ export async function sendOutreach(
         .where(eq(outreachMessages.id, message.id));
       await tx
         .update(investigations)
-        .set({ stageDetail: `Email provider failed: ${safeError}`, updatedAt: new Date() })
+        .set({
+          stageDetail: `Email provider failed: ${safeError}`,
+          updatedAt: new Date(),
+        })
         .where(eq(investigations.id, thread.investigationId));
       await writeAudit(tx, {
         actorType: "worker",
@@ -665,17 +917,24 @@ export async function sendOutreach(
     await queue.enqueue(
       "outreach.no_response_check",
       { investigationId: thread.investigationId },
-      { singletonKey: `no_response:${message.id}`, startAfter: (settings?.noResponseDays ?? 7) * 86400_000 },
+      {
+        singletonKey: `no_response:${message.id}`,
+        startAfter: (settings?.noResponseDays ?? 7) * 86400_000,
+      },
     );
   }
   return { sent: true, captured: sent.captured };
 }
 
 function sanitizeProviderError(error: unknown) {
-  const message = error instanceof Error ? error.message : "Unknown email provider error";
+  const message =
+    error instanceof Error ? error.message : "Unknown email provider error";
   return message
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[redacted email]")
-    .replace(/\b(api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .replace(
+      /\b(api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi,
+      "$1=[redacted]",
+    )
     .slice(0, 240);
 }
 
@@ -686,7 +945,18 @@ async function reschedule(
   scheduledFor: Date,
   reason: string,
 ) {
-  await database.update(outreachMessages).set({ status: "scheduled", scheduledFor, updatedAt: new Date() }).where(eq(outreachMessages.id, messageId));
-  if (queue) await queue.enqueue("outreach.send", { messageId }, { singletonKey: `reschedule:${messageId}:${scheduledFor.getTime()}`, startAfter: scheduledFor });
+  await database
+    .update(outreachMessages)
+    .set({ status: "scheduled", scheduledFor, updatedAt: new Date() })
+    .where(eq(outreachMessages.id, messageId));
+  if (queue)
+    await queue.enqueue(
+      "outreach.send",
+      { messageId },
+      {
+        singletonKey: `reschedule:${messageId}:${scheduledFor.getTime()}`,
+        startAfter: scheduledFor,
+      },
+    );
   return { sent: false, reason, scheduledFor };
 }

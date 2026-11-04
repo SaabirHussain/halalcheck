@@ -4,10 +4,17 @@ import { claimSchema, replySchema } from "./validation";
 
 export type PublicClaim = z.infer<typeof claimSchema>;
 export type ParsedReply = z.infer<typeof replySchema>;
-export type OpenQuestion = { key: string; prompt: string; product?: string; attribute?: string };
+export type OpenQuestion = {
+  key: string;
+  prompt: string;
+  product?: string;
+  attribute?: string;
+};
 
 export interface AIProvider {
-  extractPublicClaims(pages: Array<{ url: string; title: string; text: string }>): Promise<PublicClaim[]>;
+  extractPublicClaims(
+    pages: Array<{ url: string; title: string; text: string }>,
+  ): Promise<PublicClaim[]>;
   parseReply(text: string, openQuestions: OpenQuestion[]): Promise<ParsedReply>;
 }
 

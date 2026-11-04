@@ -6,28 +6,35 @@ export class DemoPlacesProvider implements PlacesProvider {
   async searchNearby(input: PlacesSearch): Promise<PlaceResult[]> {
     return demoScenarios.flatMap((scenario, index) => {
       if (input.category && scenario.category !== input.category) return [];
-      if (input.query && !`${scenario.business} ${scenario.cuisine}`.toLowerCase().includes(input.query.toLowerCase())) {
+      if (
+        input.query &&
+        !`${scenario.business} ${scenario.cuisine}`
+          .toLowerCase()
+          .includes(input.query.toLowerCase())
+      ) {
         return [];
       }
       const lat = 43.65 + Math.floor(index / 5) * 0.017;
       const lng = -79.38 + (index % 5) * 0.015;
       const distance = distanceKm(input.lat, input.lng, lat, lng);
       if (distance > input.radiusKm) return [];
-      return [{
-        provider: "demo",
-        externalId: `demo:${scenario.key}`,
-        name: scenario.business,
-        address: scenario.address,
-        lat,
-        lng,
-        category: scenario.category,
-        ...(scenario.key === "cedar"
-          ? { website: "https://cedar.demo.halalcheck.test/" }
-          : scenario.key === "olive"
-            ? { website: "https://olive.demo.halalcheck.test/" }
-            : {}),
-        attribution: "Fictional HalalCheck demo data",
-      }];
+      return [
+        {
+          provider: "demo",
+          externalId: `demo:${scenario.key}`,
+          name: scenario.business,
+          address: scenario.address,
+          lat,
+          lng,
+          category: scenario.category,
+          ...(scenario.key === "cedar"
+            ? { website: "https://cedar.demo.halalcheck.test/" }
+            : scenario.key === "olive"
+              ? { website: "https://olive.demo.halalcheck.test/" }
+              : {}),
+          attribution: "Fictional HalalCheck demo data",
+        },
+      ];
     });
   }
 }

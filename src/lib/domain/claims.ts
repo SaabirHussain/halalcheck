@@ -19,7 +19,11 @@ import type { JobQueue } from "@/lib/jobs/types";
 import type { Actor } from "./actor";
 import { requireAdminActor } from "./actor";
 import { writeAudit } from "./audit";
-import { openQuestionKeysForClaims, researchQuestions, createOutreachDraft } from "./outreach";
+import {
+  openQuestionKeysForClaims,
+  researchQuestions,
+  createOutreachDraft,
+} from "./outreach";
 
 type Database = typeof defaultDb;
 
@@ -29,11 +33,17 @@ export async function parseInboundReply(
   queue: JobQueue,
   database: Database = defaultDb,
 ) {
-  if (actor.type !== "worker" && actor.type !== "system") throw new Error("Worker access required.");
+  if (actor.type !== "worker" && actor.type !== "system")
+    throw new Error("Worker access required.");
   const [message] = await database
     .select()
     .from(outreachMessages)
-    .where(and(eq(outreachMessages.id, messageId), eq(outreachMessages.direction, "inbound")))
+    .where(
+      and(
+        eq(outreachMessages.id, messageId),
+        eq(outreachMessages.direction, "inbound"),
+      ),
+    )
     .limit(1);
   if (!message) throw new Error("Inbound message not found.");
   const [thread] = await database
@@ -41,11 +51,14 @@ export async function parseInboundReply(
     .from(outreachThreads)
     .where(eq(outreachThreads.id, message.threadId))
     .limit(1);
-  if (!thread || thread.status !== "open") return { parsed: false, reason: "thread-closed" };
+  if (!thread || thread.status !== "open")
+    return { parsed: false, reason: "thread-closed" };
   const [source] = await database
     .select({ id: sources.id })
     .from(sources)
-    .where(and(eq(sources.messageId, message.id), eq(sources.kind, "email_reply")))
+    .where(
+      and(eq(sources.messageId, message.id), eq(sources.kind, "email_reply")),
+    )
     .limit(1);
   const [replyTarget] = message.inReplyTo
     ? await database
@@ -65,11 +78,18 @@ export async function parseInboundReply(
     : await database
         .select({ questions: outreachMessages.questions })
         .from(outreachMessages)
-        .where(and(eq(outreachMessages.threadId, thread.id), eq(outreachMessages.direction, "outbound")))
+        .where(
+          and(
+            eq(outreachMessages.threadId, thread.id),
+            eq(outreachMessages.direction, "outbound"),
+          ),
+        )
         .orderBy(desc(outreachMessages.sequence))
         .limit(1);
   const requestedQuestions = latestOutbound?.questions.length
-    ? researchQuestions.filter((question) => latestOutbound.questions.includes(question.key))
+    ? researchQuestions.filter((question) =>
+        latestOutbound.questions.includes(question.key),
+      )
     : researchQuestions;
   const openQuestions: OpenQuestion[] = requestedQuestions.map((question) => ({
     key: question.key,
@@ -77,11 +97,18 @@ export async function parseInboundReply(
     product: question.product,
     attribute: question.attribute,
   }));
-  const parsed = await getAIProvider().parseReply(message.bodyText, openQuestions);
+  const parsed = await getAIProvider().parseReply(
+    message.bodyText,
+    openQuestions,
+  );
 
   if (parsed.optOut) {
     const [endpoint] = thread.contactEndpointId
-      ? await database.select().from(contactEndpoints).where(eq(contactEndpoints.id, thread.contactEndpointId)).limit(1)
+      ? await database
+          .select()
+          .from(contactEndpoints)
+          .where(eq(contactEndpoints.id, thread.contactEndpointId))
+          .limit(1)
       : [];
     await database.transaction(async (tx) => {
       if (endpoint) {
@@ -105,7 +132,11 @@ export async function parseInboundReply(
           and(
             eq(outreachMessages.threadId, thread.id),
             eq(outreachMessages.direction, "outbound"),
-            inArray(outreachMessages.status, ["draft", "approved", "scheduled"]),
+            inArray(outreachMessages.status, [
+              "draft",
+              "approved",
+              "scheduled",
+            ]),
           ),
         );
       await writeAudit(tx, {
@@ -125,7 +156,14 @@ export async function parseInboundReply(
     await database
       .insert(suppressions)
       .values({
-        valueNormalized: (await database.select({ value: contactEndpoints.value }).from(contactEndpoints).where(eq(contactEndpoints.id, thread.contactEndpointId ?? "")).limit(1))[0]?.value.toLowerCase() ?? `thread:${thread.id}`,
+        valueNormalized:
+          (
+            await database
+              .select({ value: contactEndpoints.value })
+              .from(contactEndpoints)
+              .where(eq(contactEndpoints.id, thread.contactEndpointId ?? ""))
+              .limit(1)
+          )[0]?.value.toLowerCase() ?? `thread:${thread.id}`,
         kind: "email",
         reason: "refusal",
       })
@@ -150,14 +188,23 @@ export async function parseInboundReply(
       sourceId: claims.sourceId,
     })
     .from(claims)
-    .where(and(eq(claims.branchId, thread.branchId), inArray(claims.status, ["published", "proposed"])));
+    .where(
+      and(
+        eq(claims.branchId, thread.branchId),
+        inArray(claims.status, ["published", "proposed"]),
+      ),
+    );
   const conflictClaimIds: string[] = [];
   const conflictingAnswers = validAnswers.some((answer, index) =>
-    validAnswers.slice(index + 1).some((other) =>
-      answer.product === other.product &&
-      answer.attribute === other.attribute &&
-      (answer.valueEnum ?? answer.value).toLowerCase() !== (other.valueEnum ?? other.value).toLowerCase(),
-    ),
+    validAnswers
+      .slice(index + 1)
+      .some(
+        (other) =>
+          answer.product === other.product &&
+          answer.attribute === other.attribute &&
+          (answer.valueEnum ?? answer.value).toLowerCase() !==
+            (other.valueEnum ?? other.value).toLowerCase(),
+      ),
   );
   let claimsCreated = 0;
   for (const answer of validAnswers) {
@@ -170,24 +217,34 @@ export async function parseInboundReply(
     );
     conflictClaimIds.push(
       ...conflicts
-        .filter((claim) => claim.status === "proposed" && claim.sourceId !== source?.id)
+        .filter(
+          (claim) =>
+            claim.status === "proposed" && claim.sourceId !== source?.id,
+        )
         .map((claim) => claim.id),
     );
-    const valueEnum = answer.specificity === "vague" ? "unknown" : answer.valueEnum;
-    const [createdClaim] = await database.insert(claims).values({
-      branchId: thread.branchId,
-      investigationId: thread.investigationId,
-      product: answer.product,
-      attribute: answer.attribute,
-      value: answer.value,
-      valueEnum,
-      evidenceCategory: "restaurant_claim",
-      status: "proposed",
-      idempotencyKey: `reply-claim:${message.id}:${answer.questionKey}:${answer.product}:${answer.attribute}`,
-      confirmedAt: message.receivedAt?.toISOString().slice(0, 10) ?? new Date().toISOString().slice(0, 10),
-      sourceId: source?.id,
-      supportingExcerpt: answer.excerpt,
-    }).onConflictDoNothing().returning({ id: claims.id });
+    const valueEnum =
+      answer.specificity === "vague" ? "unknown" : answer.valueEnum;
+    const [createdClaim] = await database
+      .insert(claims)
+      .values({
+        branchId: thread.branchId,
+        investigationId: thread.investigationId,
+        product: answer.product,
+        attribute: answer.attribute,
+        value: answer.value,
+        valueEnum,
+        evidenceCategory: "restaurant_claim",
+        status: "proposed",
+        idempotencyKey: `reply-claim:${message.id}:${answer.questionKey}:${answer.product}:${answer.attribute}`,
+        confirmedAt:
+          message.receivedAt?.toISOString().slice(0, 10) ??
+          new Date().toISOString().slice(0, 10),
+        sourceId: source?.id,
+        supportingExcerpt: answer.excerpt,
+      })
+      .onConflictDoNothing()
+      .returning({ id: claims.id });
     if (createdClaim) claimsCreated++;
   }
   if (parsed.referral) {
@@ -204,7 +261,10 @@ export async function parseInboundReply(
       })
       .onConflictDoNothing();
   }
-  if (parsed.staffDontKnow || parsed.vagueSignals.includes("general_halal_claim")) {
+  if (
+    parsed.staffDontKnow ||
+    parsed.vagueSignals.includes("general_halal_claim")
+  ) {
     const detail = parsed.staffDontKnow
       ? "Business staff did not know the requested information; ask for a manager or purchasing contact."
       : "Business made a general halal claim; supplier and certifier details remain unconfirmed.";
@@ -219,20 +279,40 @@ export async function parseInboundReply(
       action: "claim_conflict_detected",
       entityType: "investigation",
       entityId: thread.investigationId,
-      metadata: { claimCount: conflictClaimIds.length + (conflictingAnswers ? 1 : 0) },
+      metadata: {
+        claimCount: conflictClaimIds.length + (conflictingAnswers ? 1 : 0),
+      },
     });
     await database
       .update(investigations)
-      .set({ status: "reviewing_evidence", stageDetail: "Conflicting answers detected; evidence review required.", updatedAt: new Date() })
+      .set({
+        status: "reviewing_evidence",
+        stageDetail: "Conflicting answers detected; evidence review required.",
+        updatedAt: new Date(),
+      })
       .where(eq(investigations.id, thread.investigationId));
-    await queue.enqueue("investigation.evidence_review", { investigationId: thread.investigationId }, { singletonKey: `evidence_review:${thread.investigationId}` });
+    await queue.enqueue(
+      "investigation.evidence_review",
+      { investigationId: thread.investigationId },
+      { singletonKey: `evidence_review:${thread.investigationId}` },
+    );
     return { parsed: true, conflict: true, claimsCreated };
   }
 
   const updatedClaims = await database
-    .select({ product: claims.product, attribute: claims.attribute, value: claims.value, valueEnum: claims.valueEnum })
+    .select({
+      product: claims.product,
+      attribute: claims.attribute,
+      value: claims.value,
+      valueEnum: claims.valueEnum,
+    })
     .from(claims)
-    .where(and(eq(claims.branchId, thread.branchId), inArray(claims.status, ["published", "proposed"])));
+    .where(
+      and(
+        eq(claims.branchId, thread.branchId),
+        inArray(claims.status, ["published", "proposed"]),
+      ),
+    );
   const stillOpen = openQuestionKeysForClaims(updatedClaims);
   const [settings] = await database.select().from(outreachSettings).limit(1);
   const maxFollowups = settings?.maxFollowups ?? 2;
@@ -250,8 +330,17 @@ export async function parseInboundReply(
     .update(branches)
     .set({ researchStatus: "reviewing_evidence", updatedAt: new Date() })
     .where(eq(branches.id, thread.branchId));
-  await queue.enqueue("investigation.evidence_review", { investigationId: thread.investigationId }, { singletonKey: `evidence_review:${thread.investigationId}` });
-  return { parsed: true, claimsCreated, followupDrafted: false, unanswered: stillOpen.map((question) => question.key) };
+  await queue.enqueue(
+    "investigation.evidence_review",
+    { investigationId: thread.investigationId },
+    { singletonKey: `evidence_review:${thread.investigationId}` },
+  );
+  return {
+    parsed: true,
+    claimsCreated,
+    followupDrafted: false,
+    unanswered: stillOpen.map((question) => question.key),
+  };
 }
 
 export async function reviewEvidence(
@@ -259,7 +348,8 @@ export async function reviewEvidence(
   investigationId: string,
   database: Database = defaultDb,
 ) {
-  if (actor.type !== "worker" && actor.type !== "system") throw new Error("Worker access required.");
+  if (actor.type !== "worker" && actor.type !== "system")
+    throw new Error("Worker access required.");
   const [investigation] = await database
     .select()
     .from(investigations)
@@ -269,14 +359,26 @@ export async function reviewEvidence(
   const [pending] = await database
     .select({ id: proposedUpdates.id })
     .from(proposedUpdates)
-    .where(and(eq(proposedUpdates.investigationId, investigationId), eq(proposedUpdates.status, "pending")))
+    .where(
+      and(
+        eq(proposedUpdates.investigationId, investigationId),
+        eq(proposedUpdates.status, "pending"),
+      ),
+    )
     .limit(1);
   if (pending) return pending.id;
   const branchClaims = await database
     .select()
     .from(claims)
-    .where(and(eq(claims.branchId, investigation.branchId), inArray(claims.status, ["published", "proposed"])));
-  const proposedClaims = branchClaims.filter((claim) => claim.status === "proposed");
+    .where(
+      and(
+        eq(claims.branchId, investigation.branchId),
+        inArray(claims.status, ["published", "proposed"]),
+      ),
+    );
+  const proposedClaims = branchClaims.filter(
+    (claim) => claim.status === "proposed",
+  );
   const openQuestions = openQuestionKeysForClaims(branchClaims);
   const flags: Array<{ type: string; detail: string; claimIds: string[] }> = [];
   for (let i = 0; i < branchClaims.length; i++) {
@@ -289,7 +391,8 @@ export async function reviewEvidence(
         first.sourceId !== second.sourceId &&
         first.product === second.product &&
         first.attribute === second.attribute &&
-        (first.valueEnum ?? first.value).toLowerCase() !== (second.valueEnum ?? second.value).toLowerCase()
+        (first.valueEnum ?? first.value).toLowerCase() !==
+          (second.valueEnum ?? second.value).toLowerCase()
       ) {
         flags.push({
           type: "contradiction",
@@ -302,13 +405,29 @@ export async function reviewEvidence(
   const certificatesForBranch = await database
     .select()
     .from(certificates)
-    .where(and(eq(certificates.branchId, investigation.branchId), inArray(certificates.reviewStatus, ["accepted", "pending"])));
+    .where(
+      and(
+        eq(certificates.branchId, investigation.branchId),
+        inArray(certificates.reviewStatus, ["accepted", "pending"]),
+      ),
+    );
   for (const certificate of certificatesForBranch) {
-    if (certificate.validUntil && certificate.validUntil < new Date().toISOString().slice(0, 10)) {
-      flags.push({ type: "expired_certificate", detail: "A pending or accepted certificate has expired.", claimIds: [] });
+    if (
+      certificate.validUntil &&
+      certificate.validUntil < new Date().toISOString().slice(0, 10)
+    ) {
+      flags.push({
+        type: "expired_certificate",
+        detail: "A pending or accepted certificate has expired.",
+        claimIds: [],
+      });
     }
     if (certificate.coversBranch !== true) {
-      flags.push({ type: "missing_branch_coverage", detail: "Certificate scope does not confirm this branch.", claimIds: [] });
+      flags.push({
+        type: "missing_branch_coverage",
+        detail: "Certificate scope does not confirm this branch.",
+        claimIds: [],
+      });
     }
   }
   if (investigation.stageDetail?.startsWith("Conflicting answers detected")) {
@@ -331,7 +450,8 @@ export async function reviewEvidence(
         claim.status === "published" &&
         claim.product === proposed.product &&
         claim.attribute === proposed.attribute &&
-        (claim.valueEnum ?? claim.value).toLowerCase() !== (proposed.valueEnum ?? proposed.value).toLowerCase(),
+        (claim.valueEnum ?? claim.value).toLowerCase() !==
+          (proposed.valueEnum ?? proposed.value).toLowerCase(),
     );
     if (old) {
       flags.push({
@@ -361,7 +481,12 @@ export async function reviewEvidence(
     const [existing] = await database
       .select({ id: proposedUpdates.id })
       .from(proposedUpdates)
-      .where(and(eq(proposedUpdates.investigationId, investigationId), eq(proposedUpdates.status, "pending")))
+      .where(
+        and(
+          eq(proposedUpdates.investigationId, investigationId),
+          eq(proposedUpdates.status, "pending"),
+        ),
+      )
       .limit(1);
     if (existing) return existing.id;
     throw new Error("Evidence proposal could not be created.");
@@ -371,11 +496,20 @@ export async function reviewEvidence(
       await tx
         .update(claims)
         .set({ proposedUpdateId: proposal!.id, updatedAt: new Date() })
-        .where(inArray(claims.id, proposedClaims.map((claim) => claim.id)));
+        .where(
+          inArray(
+            claims.id,
+            proposedClaims.map((claim) => claim.id),
+          ),
+        );
     }
     await tx
       .update(investigations)
-      .set({ status: "reviewing_evidence", stageDetail: "Evidence proposal awaits administrator review.", updatedAt: new Date() })
+      .set({
+        status: "reviewing_evidence",
+        stageDetail: "Evidence proposal awaits administrator review.",
+        updatedAt: new Date(),
+      })
       .where(eq(investigations.id, investigationId));
     await tx
       .update(branches)
@@ -392,12 +526,21 @@ export async function closeInvestigationUnableToConfirm(
   database: Database = defaultDb,
 ) {
   const admin = await requireAdminActor(actor, database);
-  const [investigation] = await database.select().from(investigations).where(eq(investigations.id, investigationId)).limit(1);
+  const [investigation] = await database
+    .select()
+    .from(investigations)
+    .where(eq(investigations.id, investigationId))
+    .limit(1);
   if (!investigation) throw new Error("Investigation not found.");
   const [existing] = await database
     .select({ id: proposedUpdates.id })
     .from(proposedUpdates)
-    .where(and(eq(proposedUpdates.investigationId, investigationId), eq(proposedUpdates.status, "pending")))
+    .where(
+      and(
+        eq(proposedUpdates.investigationId, investigationId),
+        eq(proposedUpdates.status, "pending"),
+      ),
+    )
     .limit(1);
   if (existing) return existing.id;
   const [proposal] = await database
@@ -406,9 +549,16 @@ export async function closeInvestigationUnableToConfirm(
       branchId: investigation.branchId,
       investigationId,
       status: "pending",
-      publicSummary: "We could not confirm current findings. This is not a finding that the food is non-halal.",
+      publicSummary:
+        "We could not confirm current findings. This is not a finding that the food is non-halal.",
       unansweredQuestions: researchQuestions.map((question) => question.key),
-      flags: [{ type: "unanswered", detail: "No confirming evidence was available.", claimIds: [] }],
+      flags: [
+        {
+          type: "unanswered",
+          detail: "No confirming evidence was available.",
+          claimIds: [],
+        },
+      ],
     })
     .onConflictDoNothing()
     .returning({ id: proposedUpdates.id });
@@ -421,8 +571,18 @@ export async function closeInvestigationUnableToConfirm(
     entityId: proposal!.id,
   });
   await database.transaction(async (tx) => {
-    await tx.update(investigations).set({ status: "reviewing_evidence", stageDetail: "Unable-to-confirm proposal awaits review.", updatedAt: new Date() }).where(eq(investigations.id, investigationId));
-    await tx.update(branches).set({ researchStatus: "reviewing_evidence", updatedAt: new Date() }).where(eq(branches.id, investigation.branchId));
+    await tx
+      .update(investigations)
+      .set({
+        status: "reviewing_evidence",
+        stageDetail: "Unable-to-confirm proposal awaits review.",
+        updatedAt: new Date(),
+      })
+      .where(eq(investigations.id, investigationId));
+    await tx
+      .update(branches)
+      .set({ researchStatus: "reviewing_evidence", updatedAt: new Date() })
+      .where(eq(branches.id, investigation.branchId));
   });
   void queue;
   return proposal!.id;

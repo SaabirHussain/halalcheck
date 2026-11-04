@@ -16,12 +16,20 @@ import {
 import { sql } from "drizzle-orm";
 
 const timestamps = {
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 };
 
 export const roleEnum = pgEnum("role", ["user", "admin"]);
-export const categoryEnum = pgEnum("business_category", ["restaurant", "butcher", "grocery"]);
+export const categoryEnum = pgEnum("business_category", [
+  "restaurant",
+  "butcher",
+  "grocery",
+]);
 export const researchStatusEnum = pgEnum("research_status", [
   "not_researched",
   "queued",
@@ -33,7 +41,10 @@ export const researchStatusEnum = pgEnum("research_status", [
   "unable_to_confirm",
   "needs_refresh",
 ]);
-export const investigationKindEnum = pgEnum("investigation_kind", ["initial", "refresh"]);
+export const investigationKindEnum = pgEnum("investigation_kind", [
+  "initial",
+  "refresh",
+]);
 export const jobStatusEnum = pgEnum("job_status", [
   "queued",
   "running",
@@ -41,14 +52,21 @@ export const jobStatusEnum = pgEnum("job_status", [
   "failed",
   "cancelled",
 ]);
-export const contactKindEnum = pgEnum("contact_kind", ["email", "phone", "web_form"]);
+export const contactKindEnum = pgEnum("contact_kind", [
+  "email",
+  "phone",
+  "web_form",
+]);
 export const contactStatusEnum = pgEnum("contact_status", [
   "unverified",
   "approved",
   "ambiguous",
   "rejected",
 ]);
-export const suppressionKindEnum = pgEnum("suppression_kind", ["email", "domain"]);
+export const suppressionKindEnum = pgEnum("suppression_kind", [
+  "email",
+  "domain",
+]);
 export const suppressionReasonEnum = pgEnum("suppression_reason", [
   "opt_out",
   "bounce",
@@ -66,7 +84,10 @@ export const threadStatusEnum = pgEnum("thread_status", [
   "refused",
   "bounced",
 ]);
-export const messageDirectionEnum = pgEnum("message_direction", ["outbound", "inbound"]);
+export const messageDirectionEnum = pgEnum("message_direction", [
+  "outbound",
+  "inbound",
+]);
 export const messageKindEnum = pgEnum("message_kind", [
   "initial",
   "followup",
@@ -167,8 +188,15 @@ export const auditActorEnum = pgEnum("audit_actor_type", [
   "system",
   "worker",
 ]);
-export const outboxStatusEnum = pgEnum("outbox_status", ["captured", "sent", "failed"]);
-export const outboxPurposeEnum = pgEnum("outbox_purpose", ["outreach", "notification"]);
+export const outboxStatusEnum = pgEnum("outbox_status", [
+  "captured",
+  "sent",
+  "failed",
+]);
+export const outboxPurposeEnum = pgEnum("outbox_purpose", [
+  "outreach",
+  "notification",
+]);
 
 export const users = pgTable(
   "users",
@@ -179,9 +207,13 @@ export const users = pgTable(
     displayName: text("display_name").notNull(),
     role: roleEnum("role").notNull().default("user"),
     emailNotifications: boolean("email_notifications").notNull().default(false),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
-  (table) => [uniqueIndex("users_email_lower_unique").on(sql`lower(${table.email})`)],
+  (table) => [
+    uniqueIndex("users_email_lower_unique").on(sql`lower(${table.email})`),
+  ],
 );
 
 export const sessions = pgTable(
@@ -193,7 +225,9 @@ export const sessions = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => [index("sessions_user_id_idx").on(table.userId)],
 );
@@ -279,7 +313,9 @@ export const investigations = pgTable(
     outcome: text("outcome"),
     budgetFetchesUsed: integer("budget_fetches_used").notNull().default(0),
     budgetAiCallsUsed: integer("budget_ai_calls_used").notNull().default(0),
-    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
     ...timestamps,
   },
   (table) => [
@@ -324,7 +360,10 @@ export const branchFollows = pgTable(
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("branch_follows_user_branch_unique").on(table.userId, table.branchId),
+    uniqueIndex("branch_follows_user_branch_unique").on(
+      table.userId,
+      table.branchId,
+    ),
   ],
 );
 
@@ -332,13 +371,19 @@ export const jobRuns = pgTable(
   "job_runs",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    investigationId: uuid("investigation_id").references(() => investigations.id, {
-      onDelete: "set null",
-    }),
+    investigationId: uuid("investigation_id").references(
+      () => investigations.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     jobName: text("job_name").notNull(),
     pgbossJobId: text("pgboss_job_id"),
     idempotencyKey: text("idempotency_key").notNull().unique(),
-    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    payload: jsonb("payload")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
     status: jobStatusEnum("status").notNull().default("queued"),
     attempts: integer("attempts").notNull().default(0),
     lastError: text("last_error"),
@@ -353,16 +398,21 @@ export const sources = pgTable(
   "sources",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    investigationId: uuid("investigation_id").references(() => investigations.id, {
-      onDelete: "set null",
-    }),
+    investigationId: uuid("investigation_id").references(
+      () => investigations.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     branchId: uuid("branch_id")
       .notNull()
       .references(() => branches.id, { onDelete: "cascade" }),
     kind: sourceKindEnum("kind").notNull(),
     url: text("url"),
     title: text("title").notNull(),
-    retrievedAt: timestamp("retrieved_at", { withTimezone: true }).notNull().defaultNow(),
+    retrievedAt: timestamp("retrieved_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     contentHash: text("content_hash"),
     rawText: text("raw_text"),
     isPublic: boolean("is_public").notNull().default(false),
@@ -388,7 +438,9 @@ export const contactEndpoints = pgTable(
     kind: contactKindEnum("kind").notNull(),
     value: text("value").notNull(),
     status: contactStatusEnum("status").notNull().default("unverified"),
-    sourceId: uuid("source_id").references(() => sources.id, { onDelete: "set null" }),
+    sourceId: uuid("source_id").references(() => sources.id, {
+      onDelete: "set null",
+    }),
     isPersonal: boolean("is_personal").notNull().default(false),
     notes: text("notes"),
     ...timestamps,
@@ -410,7 +462,9 @@ export const suppressions = pgTable(
     valueNormalized: text("value_normalized").notNull().unique(),
     kind: suppressionKindEnum("kind").notNull(),
     reason: suppressionReasonEnum("reason").notNull(),
-    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
     note: text("note"),
     ...timestamps,
   },
@@ -422,7 +476,9 @@ export const outreachSettings = pgTable("outreach_settings", {
   mode: outreachModeEnum("mode").notNull().default("manual_approval"),
   paused: boolean("paused").notNull().default(false),
   maxFollowups: integer("max_followups").notNull().default(2),
-  minDaysBetweenMessages: integer("min_days_between_messages").notNull().default(3),
+  minDaysBetweenMessages: integer("min_days_between_messages")
+    .notNull()
+    .default(3),
   maxMessagesPerBusiness30d: integer("max_messages_per_business_30d")
     .notNull()
     .default(4),
@@ -440,16 +496,21 @@ export const outreachThreads = pgTable(
     branchId: uuid("branch_id")
       .notNull()
       .references(() => branches.id, { onDelete: "cascade" }),
-    contactEndpointId: uuid("contact_endpoint_id").references(() => contactEndpoints.id, {
-      onDelete: "set null",
-    }),
+    contactEndpointId: uuid("contact_endpoint_id").references(
+      () => contactEndpoints.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     threadToken: text("thread_token").notNull().unique(),
     status: threadStatusEnum("status").notNull().default("open"),
     followupsSent: integer("followups_sent").notNull().default(0),
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("outreach_threads_investigation_unique").on(table.investigationId),
+    uniqueIndex("outreach_threads_investigation_unique").on(
+      table.investigationId,
+    ),
     index("outreach_threads_branch_idx").on(table.branchId),
   ],
 );
@@ -474,7 +535,9 @@ export const outreachMessages = pgTable(
     scheduledFor: timestamp("scheduled_for", { withTimezone: true }),
     sentAt: timestamp("sent_at", { withTimezone: true }),
     receivedAt: timestamp("received_at", { withTimezone: true }),
-    approvedBy: uuid("approved_by").references(() => users.id, { onDelete: "set null" }),
+    approvedBy: uuid("approved_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
     idempotencyKey: text("idempotency_key").notNull().unique(),
     error: text("error"),
     ...timestamps,
@@ -485,7 +548,10 @@ export const outreachMessages = pgTable(
       table.direction,
       table.sequence,
     ),
-    index("outreach_messages_thread_status_idx").on(table.threadId, table.status),
+    index("outreach_messages_thread_status_idx").on(
+      table.threadId,
+      table.status,
+    ),
   ],
 );
 
@@ -495,13 +561,18 @@ export const webhookEvents = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     provider: text("provider").notNull(),
     eventId: text("event_id").notNull(),
-    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     payloadHash: text("payload_hash").notNull(),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("webhook_events_provider_event_unique").on(table.provider, table.eventId),
+    uniqueIndex("webhook_events_provider_event_unique").on(
+      table.provider,
+      table.eventId,
+    ),
   ],
 );
 
@@ -518,7 +589,9 @@ export const unexpectedReplies = pgTable(
     reviewStatus: text("review_status").notNull().default("unmatched"),
     ...timestamps,
   },
-  (table) => [index("unexpected_replies_review_status_idx").on(table.reviewStatus)],
+  (table) => [
+    index("unexpected_replies_review_status_idx").on(table.reviewStatus),
+  ],
 );
 
 export const evidenceDocuments = pgTable(
@@ -550,31 +623,49 @@ export const certifiers = pgTable(
     isDemo: boolean("is_demo").notNull().default(false),
     ...timestamps,
   },
-  (table) => [uniqueIndex("certifiers_name_lower_unique").on(sql`lower(${table.name})`)],
+  (table) => [
+    uniqueIndex("certifiers_name_lower_unique").on(sql`lower(${table.name})`),
+  ],
 );
 
 export const certificates = pgTable(
   "certificates",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    branchId: uuid("branch_id").references(() => branches.id, { onDelete: "cascade" }),
-    businessId: uuid("business_id").references(() => businesses.id, { onDelete: "cascade" }),
+    branchId: uuid("branch_id").references(() => branches.id, {
+      onDelete: "cascade",
+    }),
+    businessId: uuid("business_id").references(() => businesses.id, {
+      onDelete: "cascade",
+    }),
     certifierId: uuid("certifier_id")
       .notNull()
       .references(() => certifiers.id, { onDelete: "restrict" }),
-    products: text("products").array().notNull().default(sql`'{}'::text[]`),
+    products: text("products")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     scopeText: text("scope_text"),
     certificateNumber: text("certificate_number"),
     validFrom: date("valid_from", { mode: "string" }),
     validUntil: date("valid_until", { mode: "string" }),
     coversBranch: boolean("covers_branch"),
-    sourceId: uuid("source_id").references(() => sources.id, { onDelete: "set null" }),
-    reviewStatus: certificateReviewEnum("review_status").notNull().default("pending"),
-    reviewedBy: uuid("reviewed_by").references(() => users.id, { onDelete: "set null" }),
+    sourceId: uuid("source_id").references(() => sources.id, {
+      onDelete: "set null",
+    }),
+    reviewStatus: certificateReviewEnum("review_status")
+      .notNull()
+      .default("pending"),
+    reviewedBy: uuid("reviewed_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
     ...timestamps,
   },
   (table) => [
-    index("certificates_branch_review_idx").on(table.branchId, table.reviewStatus),
+    index("certificates_branch_review_idx").on(
+      table.branchId,
+      table.reviewStatus,
+    ),
     index("certificates_valid_until_idx").on(table.validUntil),
   ],
 );
@@ -592,15 +683,22 @@ export const corrections = pgTable(
     body: text("body").notNull(),
     url: text("url"),
     isOwnerSubmission: boolean("is_owner_submission").notNull().default(false),
-    evidenceDocumentId: uuid("evidence_document_id").references(() => evidenceDocuments.id, {
-      onDelete: "set null",
-    }),
+    evidenceDocumentId: uuid("evidence_document_id").references(
+      () => evidenceDocuments.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     status: correctionStatusEnum("status").notNull().default("open"),
     adminNote: text("admin_note"),
-    reviewedBy: uuid("reviewed_by").references(() => users.id, { onDelete: "set null" }),
+    reviewedBy: uuid("reviewed_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
     ...timestamps,
   },
-  (table) => [index("corrections_branch_status_idx").on(table.branchId, table.status)],
+  (table) => [
+    index("corrections_branch_status_idx").on(table.branchId, table.status),
+  ],
 );
 
 export const proposedUpdates = pgTable(
@@ -610,25 +708,36 @@ export const proposedUpdates = pgTable(
     branchId: uuid("branch_id")
       .notNull()
       .references(() => branches.id, { onDelete: "cascade" }),
-    investigationId: uuid("investigation_id").references(() => investigations.id, {
-      onDelete: "set null",
-    }),
+    investigationId: uuid("investigation_id").references(
+      () => investigations.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     correctionId: uuid("correction_id").references(() => corrections.id, {
       onDelete: "set null",
     }),
     status: proposalStatusEnum("status").notNull().default("pending"),
     publicSummary: text("public_summary").notNull(),
-    unansweredQuestions: jsonb("unanswered_questions").$type<string[]>().notNull().default([]),
+    unansweredQuestions: jsonb("unanswered_questions")
+      .$type<string[]>()
+      .notNull()
+      .default([]),
     flags: jsonb("flags")
       .$type<Array<{ type: string; detail: string; claimIds: string[] }>>()
       .notNull()
       .default([]),
-    reviewedBy: uuid("reviewed_by").references(() => users.id, { onDelete: "set null" }),
+    reviewedBy: uuid("reviewed_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [
-    index("proposed_updates_branch_status_idx").on(table.branchId, table.status),
+    index("proposed_updates_branch_status_idx").on(
+      table.branchId,
+      table.status,
+    ),
     index("proposed_updates_investigation_idx").on(table.investigationId),
     uniqueIndex("proposed_updates_pending_investigation_unique")
       .on(table.investigationId)
@@ -644,15 +753,24 @@ export const publishedRevisions = pgTable(
       .notNull()
       .references(() => branches.id, { onDelete: "cascade" }),
     revisionNumber: integer("revision_number").notNull(),
-    proposedUpdateId: uuid("proposed_update_id").references(() => proposedUpdates.id, {
+    proposedUpdateId: uuid("proposed_update_id").references(
+      () => proposedUpdates.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    publishedBy: uuid("published_by").references(() => users.id, {
       onDelete: "set null",
     }),
-    publishedBy: uuid("published_by").references(() => users.id, { onDelete: "set null" }),
-    publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
+    publishedAt: timestamp("published_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     changeSummary: text("change_summary").notNull(),
     publicSummary: text("public_summary").notNull(),
     snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
-    outcome: revisionOutcomeEnum("outcome").notNull().default("findings_published"),
+    outcome: revisionOutcomeEnum("outcome")
+      .notNull()
+      .default("findings_published"),
     ...timestamps,
   },
   (table) => [
@@ -660,7 +778,10 @@ export const publishedRevisions = pgTable(
       table.branchId,
       table.revisionNumber,
     ),
-    index("published_revisions_branch_published_idx").on(table.branchId, table.publishedAt),
+    index("published_revisions_branch_published_idx").on(
+      table.branchId,
+      table.publishedAt,
+    ),
   ],
 );
 
@@ -671,12 +792,18 @@ export const claims = pgTable(
     branchId: uuid("branch_id")
       .notNull()
       .references(() => branches.id, { onDelete: "cascade" }),
-    investigationId: uuid("investigation_id").references(() => investigations.id, {
-      onDelete: "set null",
-    }),
-    proposedUpdateId: uuid("proposed_update_id").references(() => proposedUpdates.id, {
-      onDelete: "set null",
-    }),
+    investigationId: uuid("investigation_id").references(
+      () => investigations.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    proposedUpdateId: uuid("proposed_update_id").references(
+      () => proposedUpdates.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     product: claimProductEnum("product").notNull(),
     attribute: claimAttributeEnum("attribute").notNull(),
     value: text("value").notNull(),
@@ -684,7 +811,9 @@ export const claims = pgTable(
     evidenceCategory: evidenceCategoryEnum("evidence_category").notNull(),
     status: claimStatusEnum("status").notNull().default("proposed"),
     confirmedAt: date("confirmed_at", { mode: "string" }),
-    sourceId: uuid("source_id").references(() => sources.id, { onDelete: "set null" }),
+    sourceId: uuid("source_id").references(() => sources.id, {
+      onDelete: "set null",
+    }),
     supportingExcerpt: text("supporting_excerpt"),
     publishedRevisionId: uuid("published_revision_id").references(
       () => publishedRevisions.id,
@@ -717,7 +846,12 @@ export const favorites = pgTable(
       .references(() => branches.id, { onDelete: "cascade" }),
     ...timestamps,
   },
-  (table) => [uniqueIndex("favorites_user_branch_unique").on(table.userId, table.branchId)],
+  (table) => [
+    uniqueIndex("favorites_user_branch_unique").on(
+      table.userId,
+      table.branchId,
+    ),
+  ],
 );
 
 export const notifications = pgTable(
@@ -728,7 +862,9 @@ export const notifications = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     type: notificationTypeEnum("type").notNull(),
-    branchId: uuid("branch_id").references(() => branches.id, { onDelete: "set null" }),
+    branchId: uuid("branch_id").references(() => branches.id, {
+      onDelete: "set null",
+    }),
     title: text("title").notNull(),
     body: text("body").notNull(),
     link: text("link").notNull(),
@@ -737,7 +873,10 @@ export const notifications = pgTable(
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("notifications_user_dedupe_unique").on(table.userId, table.dedupeKey),
+    uniqueIndex("notifications_user_dedupe_unique").on(
+      table.userId,
+      table.dedupeKey,
+    ),
     index("notifications_user_created_idx").on(table.userId, table.createdAt),
   ],
 );
@@ -746,15 +885,20 @@ export const auditEvents = pgTable(
   "audit_events",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    actorUserId: uuid("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+    actorUserId: uuid("actor_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
     actorType: auditActorEnum("actor_type").notNull(),
     action: text("action").notNull(),
     entityType: text("entity_type").notNull(),
     entityId: text("entity_id").notNull(),
-    metadata: jsonb("metadata").$type<Record<string, string | number | boolean | null>>()
+    metadata: jsonb("metadata")
+      .$type<Record<string, string | number | boolean | null>>()
       .notNull()
       .default({}),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => [
     index("audit_events_entity_idx").on(table.entityType, table.entityId),
@@ -780,15 +924,23 @@ export const emailOutbox = pgTable(
     from: text("from").notNull(),
     subject: text("subject").notNull(),
     bodyText: text("body_text").notNull(),
-    headers: jsonb("headers").$type<Record<string, string>>().notNull().default({}),
+    headers: jsonb("headers")
+      .$type<Record<string, string>>()
+      .notNull()
+      .default({}),
     purpose: outboxPurposeEnum("purpose").notNull(),
     status: outboxStatusEnum("status").notNull().default("captured"),
-    relatedMessageId: uuid("related_message_id").references(() => outreachMessages.id, {
-      onDelete: "set null",
-    }),
+    relatedMessageId: uuid("related_message_id").references(
+      () => outreachMessages.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     ...timestamps,
   },
-  (table) => [index("email_outbox_related_message_idx").on(table.relatedMessageId)],
+  (table) => [
+    index("email_outbox_related_message_idx").on(table.relatedMessageId),
+  ],
 );
 
 export const notificationEmails = pgTable(
@@ -804,7 +956,9 @@ export const notificationEmails = pgTable(
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("notification_emails_notification_unique").on(table.notificationId),
+    uniqueIndex("notification_emails_notification_unique").on(
+      table.notificationId,
+    ),
   ],
 );
 

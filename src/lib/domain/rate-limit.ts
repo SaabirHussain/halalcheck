@@ -8,7 +8,9 @@ type RateDatabase = {
         target: [typeof rateLimits.key, typeof rateLimits.windowStart];
         set: { count: ReturnType<typeof sql> };
       }) => {
-        returning: (selection: { count: typeof rateLimits.count }) => Promise<Array<{ count: number }>>;
+        returning: (selection: {
+          count: typeof rateLimits.count;
+        }) => Promise<Array<{ count: number }>>;
       };
     };
   };
@@ -30,5 +32,8 @@ export async function consumeRateLimit(
       set: { count: sql`${rateLimits.count} + 1` },
     })
     .returning({ count: rateLimits.count });
-  return { allowed: (record?.count ?? limit + 1) <= limit, count: record?.count ?? limit + 1 };
+  return {
+    allowed: (record?.count ?? limit + 1) <= limit,
+    count: record?.count ?? limit + 1,
+  };
 }

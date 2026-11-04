@@ -19,18 +19,27 @@ export async function refreshScan(
   database: Database = defaultDb,
   now = new Date(),
 ) {
-  if (actor.type !== "worker" && actor.type !== "system") throw new Error("Worker access required.");
+  if (actor.type !== "worker" && actor.type !== "system")
+    throw new Error("Worker access required.");
   await purgeExpiredProviderCache(database, now);
   const refreshAfter = Number(process.env.REFRESH_AFTER_DAYS ?? 180);
   const warningDays = Number(process.env.CERT_EXPIRY_WARNING_DAYS ?? 30);
-  const minimumIntervalDays = Number(process.env.REFRESH_MIN_INTERVAL_DAYS ?? 7);
+  const minimumIntervalDays = Number(
+    process.env.REFRESH_MIN_INTERVAL_DAYS ?? 7,
+  );
   const staleDate = new Date(now.getTime() - refreshAfter * 86400_000);
-  const minimumIntervalDate = new Date(now.getTime() - minimumIntervalDays * 86400_000);
-  const warningDate = new Date(now.getTime() + warningDays * 86400_000).toISOString().slice(0, 10);
+  const minimumIntervalDate = new Date(
+    now.getTime() - minimumIntervalDays * 86400_000,
+  );
+  const warningDate = new Date(now.getTime() + warningDays * 86400_000)
+    .toISOString()
+    .slice(0, 10);
   const publishedBranches = await database
     .select({ id: branches.id, lastConfirmedAt: branches.lastConfirmedAt })
     .from(branches)
-    .where(inArray(branches.researchStatus, ["findings_published", "needs_refresh"]));
+    .where(
+      inArray(branches.researchStatus, ["findings_published", "needs_refresh"]),
+    );
   const expiring = await database
     .select({ branchId: certificates.branchId })
     .from(certificates)
@@ -44,12 +53,19 @@ export async function refreshScan(
   const changedCorrections = await database
     .select({ branchId: corrections.branchId })
     .from(corrections)
-    .where(and(eq(corrections.status, "accepted"), isNotNull(corrections.branchId)));
+    .where(
+      and(eq(corrections.status, "accepted"), isNotNull(corrections.branchId)),
+    );
   const candidates = new Set([
     ...publishedBranches
-      .filter((branch) => !branch.lastConfirmedAt || branch.lastConfirmedAt < staleDate)
+      .filter(
+        (branch) =>
+          !branch.lastConfirmedAt || branch.lastConfirmedAt < staleDate,
+      )
       .map((branch) => branch.id),
-    ...expiring.map((certificate) => certificate.branchId).filter((id): id is string => id !== null),
+    ...expiring
+      .map((certificate) => certificate.branchId)
+      .filter((id): id is string => id !== null),
     ...changedCorrections.map((correction) => correction.branchId),
   ]);
   let queued = 0;
@@ -83,7 +99,12 @@ export async function refreshScan(
     await database
       .update(corrections)
       .set({ status: "converted", updatedAt: now })
-      .where(and(eq(corrections.branchId, branchId), eq(corrections.status, "accepted")));
+      .where(
+        and(
+          eq(corrections.branchId, branchId),
+          eq(corrections.status, "accepted"),
+        ),
+      );
     await database
       .update(branches)
       .set({ researchStatus: "needs_refresh", updatedAt: now })
@@ -105,8 +126,18 @@ export async function purgeExpiredProviderCache(
   const expiry = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const removed = await database
     .update(branches)
-    .set({ providerName: null, providerAddress: null, providerCachedAt: null, updatedAt: now })
-    .where(and(isNotNull(branches.providerCachedAt), lt(branches.providerCachedAt, expiry)))
+    .set({
+      providerName: null,
+      providerAddress: null,
+      providerCachedAt: null,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        isNotNull(branches.providerCachedAt),
+        lt(branches.providerCachedAt, expiry),
+      ),
+    )
     .returning({ id: branches.id });
   return removed.length;
 }
@@ -116,7 +147,8 @@ export async function reconcileInvestigations(
   queue: JobQueue,
   database: Database = defaultDb,
 ) {
-  if (actor.type !== "worker" && actor.type !== "system") throw new Error("Worker access required.");
+  if (actor.type !== "worker" && actor.type !== "system")
+    throw new Error("Worker access required.");
   const active = await database
     .select({
       id: investigations.id,
@@ -142,9 +174,13 @@ export async function reconcileInvestigations(
       )
       .limit(1);
     if (activeJob.length) continue;
-    await queue.enqueue(queueName, { investigationId: investigation.id }, {
-      singletonKey: `${queueName}:${investigation.id}`,
-    });
+    await queue.enqueue(
+      queueName,
+      { investigationId: investigation.id },
+      {
+        singletonKey: `${queueName}:${investigation.id}`,
+      },
+    );
     enqueued++;
   }
   return enqueued;

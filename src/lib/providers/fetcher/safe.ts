@@ -42,12 +42,22 @@ function ipv6ToWords(ip: string) {
   if (mapped.includes(".")) {
     const ipv4 = mapped.slice(mapped.lastIndexOf(":") + 1);
     const number = ipv4ToNumber(ipv4);
-    return [...mapped.slice(0, mapped.lastIndexOf(":")).split(":").filter(Boolean), ((number >>> 16) & 0xffff).toString(16), (number & 0xffff).toString(16)].map((word) => parseInt(word, 16));
+    return [
+      ...mapped.slice(0, mapped.lastIndexOf(":")).split(":").filter(Boolean),
+      ((number >>> 16) & 0xffff).toString(16),
+      (number & 0xffff).toString(16),
+    ].map((word) => parseInt(word, 16));
   }
   const [leftRaw, rightRaw = ""] = mapped.split("::");
-  const left = leftRaw ? leftRaw.split(":").map((part) => parseInt(part || "0", 16)) : [];
-  const right = rightRaw ? rightRaw.split(":").map((part) => parseInt(part || "0", 16)) : [];
-  const middle = Array(Math.max(0, 8 - left.length - right.length)).fill(0) as number[];
+  const left = leftRaw
+    ? leftRaw.split(":").map((part) => parseInt(part || "0", 16))
+    : [];
+  const right = rightRaw
+    ? rightRaw.split(":").map((part) => parseInt(part || "0", 16))
+    : [];
+  const middle = Array(Math.max(0, 8 - left.length - right.length)).fill(
+    0,
+  ) as number[];
   return [...left, ...middle, ...right];
 }
 
@@ -56,7 +66,8 @@ export function isPublicIp(address: string) {
   if (version === 4) return !isUnsafeIPv4(address);
   if (version !== 6) return false;
   const words = ipv6ToWords(address);
-  const mappedV4 = words.slice(0, 5).every((part) => part === 0) && words[5] === 0xffff;
+  const mappedV4 =
+    words.slice(0, 5).every((part) => part === 0) && words[5] === 0xffff;
   if (mappedV4) {
     const ipv4 = `${words[6]! >>> 8}.${words[6]! & 255}.${words[7]! >>> 8}.${words[7]! & 255}`;
     return !isUnsafeIPv4(ipv4);
@@ -69,18 +80,26 @@ export function isPublicIp(address: string) {
 function domainAllowed(hostname: string, allowedDomains: string[]) {
   const normalized = hostname.toLowerCase().replace(/\.$/, "");
   return allowedDomains.some((domain) => {
-    const allowed = domain.toLowerCase().replace(/^\*\./, "").replace(/\.$/, "");
+    const allowed = domain
+      .toLowerCase()
+      .replace(/^\*\./, "")
+      .replace(/\.$/, "");
     return normalized === allowed || normalized.endsWith(`.${allowed}`);
   });
 }
 
 export function validateFetchUrl(urlText: string, allowedDomains: string[]) {
   const url = new URL(urlText);
-  if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only HTTP(S) URLs are allowed.");
-  if (url.username || url.password) throw new Error("URL credentials are not allowed.");
-  if (url.port && !["80", "443"].includes(url.port)) throw new Error("Nonstandard ports are blocked.");
-  if (isIP(url.hostname) && !isPublicIp(url.hostname)) throw new Error("Private network addresses are blocked.");
-  if (!domainAllowed(url.hostname, allowedDomains)) throw new Error("Host is not allowlisted.");
+  if (!["http:", "https:"].includes(url.protocol))
+    throw new Error("Only HTTP(S) URLs are allowed.");
+  if (url.username || url.password)
+    throw new Error("URL credentials are not allowed.");
+  if (url.port && !["80", "443"].includes(url.port))
+    throw new Error("Nonstandard ports are blocked.");
+  if (isIP(url.hostname) && !isPublicIp(url.hostname))
+    throw new Error("Private network addresses are blocked.");
+  if (!domainAllowed(url.hostname, allowedDomains))
+    throw new Error("Host is not allowlisted.");
   return url;
 }
 
@@ -126,10 +145,15 @@ function htmlToText(html: string) {
 async function demoFixture(url: URL): Promise<FetchedPage> {
   const pathname = path.posix.normalize(url.pathname).replace(/^\/+/, "");
   if (pathname.includes("..")) throw new Error("Invalid demo fixture path.");
-  const fixturePath = url.pathname === "/" || url.pathname.endsWith("/")
-    ? `${url.pathname}index.html`
-    : url.pathname;
-  const filename = path.join(process.cwd(), "src/demo/sites", `${url.hostname}${fixturePath}`);
+  const fixturePath =
+    url.pathname === "/" || url.pathname.endsWith("/")
+      ? `${url.pathname}index.html`
+      : url.pathname;
+  const filename = path.join(
+    process.cwd(),
+    "src/demo/sites",
+    `${url.hostname}${fixturePath}`,
+  );
   const bytes = await readFile(filename);
   const html = bytes.toString("utf8");
   const title = html.match(/<title>(.*?)<\/title>/i)?.[1] ?? url.hostname;
@@ -145,11 +169,15 @@ async function demoFixture(url: URL): Promise<FetchedPage> {
 
 async function resolvePublic(hostname: string) {
   if (isIP(hostname)) {
-    if (!isPublicIp(hostname)) throw new Error("Private or special-use IP is blocked.");
+    if (!isPublicIp(hostname))
+      throw new Error("Private or special-use IP is blocked.");
     return hostname;
   }
   const records = await dns.lookup(hostname, { all: true, verbatim: true });
-  if (!records.length || records.some((record) => !isPublicIp(record.address))) {
+  if (
+    !records.length ||
+    records.some((record) => !isPublicIp(record.address))
+  ) {
     throw new Error("Hostname resolves to a private or special-use IP.");
   }
   return records[0]!.address;
@@ -181,7 +209,9 @@ export class SSRFSafeFetcher implements SafeFetcher {
           dispatcher,
           redirect: "manual",
           signal: AbortSignal.timeout(10_000),
-          headers: { "User-Agent": "HalalCheck research bot (community directory)" },
+          headers: {
+            "User-Agent": "HalalCheck research bot (community directory)",
+          },
         });
       } finally {
         await dispatcher.close();
@@ -195,15 +225,20 @@ export class SSRFSafeFetcher implements SafeFetcher {
       }
       break;
     }
-    if (!response?.ok) throw new Error(`Fetcher returned status ${response?.status ?? 0}.`);
-    const contentType = (response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+    if (!response?.ok)
+      throw new Error(`Fetcher returned status ${response?.status ?? 0}.`);
+    const contentType = (response.headers.get("content-type") ?? "")
+      .split(";")[0]!
+      .trim()
+      .toLowerCase();
     if (!["text/html", "text/plain", "application/pdf"].includes(contentType)) {
       throw new Error("Unsupported fetched content type.");
     }
     const bytes = await readCapped(response);
     const isPdf = contentType === "application/pdf";
     const raw = Buffer.from(bytes).toString("utf8");
-    const title = raw.match(/<title[^>]*>(.*?)<\/title>/i)?.[1]?.trim() ?? url.hostname;
+    const title =
+      raw.match(/<title[^>]*>(.*?)<\/title>/i)?.[1]?.trim() ?? url.hostname;
     return {
       url: url.toString(),
       contentType,

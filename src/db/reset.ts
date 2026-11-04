@@ -25,7 +25,9 @@ const client = postgres(url, { max: 1 });
 try {
   await client.unsafe("DROP SCHEMA IF EXISTS drizzle CASCADE;");
   await client.unsafe("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
-  await client.unsafe("GRANT ALL ON SCHEMA public TO postgres; GRANT ALL ON SCHEMA public TO public;");
+  await client.unsafe(
+    "GRANT ALL ON SCHEMA public TO postgres; GRANT ALL ON SCHEMA public TO public;",
+  );
   await migrate(drizzle(client), { migrationsFolder: "./drizzle" });
   console.info("Demo database reset and migrations applied.");
 } finally {

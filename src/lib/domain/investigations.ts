@@ -25,7 +25,12 @@ export async function pauseInvestigation(
   const [row] = await database
     .update(investigations)
     .set({ paused: true, updatedAt: new Date() })
-    .where(and(eq(investigations.id, investigationId), eq(investigations.isActive, true)))
+    .where(
+      and(
+        eq(investigations.id, investigationId),
+        eq(investigations.isActive, true),
+      ),
+    )
     .returning({ id: investigations.id });
   if (!row) throw new Error("Active investigation not found.");
   await writeAudit(database, {
@@ -47,7 +52,12 @@ export async function resumeInvestigation(
   const [row] = await database
     .update(investigations)
     .set({ paused: false, updatedAt: new Date() })
-    .where(and(eq(investigations.id, investigationId), eq(investigations.isActive, true)))
+    .where(
+      and(
+        eq(investigations.id, investigationId),
+        eq(investigations.isActive, true),
+      ),
+    )
     .returning({ id: investigations.id, status: investigations.status });
   if (!row) throw new Error("Active investigation not found.");
   await writeAudit(database, {
@@ -58,9 +68,15 @@ export async function resumeInvestigation(
     entityId: row.id,
   });
   const pendingMessages = await database
-    .select({ id: outreachMessages.id, scheduledFor: outreachMessages.scheduledFor })
+    .select({
+      id: outreachMessages.id,
+      scheduledFor: outreachMessages.scheduledFor,
+    })
     .from(outreachMessages)
-    .innerJoin(outreachThreads, eq(outreachMessages.threadId, outreachThreads.id))
+    .innerJoin(
+      outreachThreads,
+      eq(outreachMessages.threadId, outreachThreads.id),
+    )
     .where(
       and(
         eq(outreachThreads.investigationId, investigationId),
@@ -82,7 +98,11 @@ export async function resumeInvestigation(
   }
   const queueName = stageQueue(row.status);
   if (queueName) {
-    await queue.enqueue(queueName, { investigationId }, { singletonKey: `${queueName}:${investigationId}` });
+    await queue.enqueue(
+      queueName,
+      { investigationId },
+      { singletonKey: `${queueName}:${investigationId}` },
+    );
   }
 }
 
@@ -95,7 +115,12 @@ export async function cancelInvestigation(
   const [row] = await database
     .select({ id: investigations.id, branchId: investigations.branchId })
     .from(investigations)
-    .where(and(eq(investigations.id, investigationId), eq(investigations.isActive, true)))
+    .where(
+      and(
+        eq(investigations.id, investigationId),
+        eq(investigations.isActive, true),
+      ),
+    )
     .limit(1);
   if (!row) throw new Error("Active investigation not found.");
   const [latest] = await database
@@ -116,9 +141,16 @@ export async function cancelInvestigation(
         .set({ status: "cancelled", updatedAt: new Date() })
         .where(
           and(
-            inArray(outreachMessages.threadId, threadRows.map((thread) => thread.id)),
+            inArray(
+              outreachMessages.threadId,
+              threadRows.map((thread) => thread.id),
+            ),
             eq(outreachMessages.direction, "outbound"),
-            inArray(outreachMessages.status, ["draft", "approved", "scheduled"]),
+            inArray(outreachMessages.status, [
+              "draft",
+              "approved",
+              "scheduled",
+            ]),
           ),
         );
     }
@@ -137,8 +169,17 @@ export async function cancelInvestigation(
       .where(eq(branches.id, row.branchId));
     await tx
       .update(jobRuns)
-      .set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(jobRuns.investigationId, investigationId), eq(jobRuns.status, "queued")));
+      .set({
+        status: "cancelled",
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(jobRuns.investigationId, investigationId),
+          eq(jobRuns.status, "queued"),
+        ),
+      );
     await writeAudit(tx, {
       actorUserId: admin.id,
       actorType: "admin",

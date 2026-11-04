@@ -18,7 +18,11 @@ export class NominatimGeocoder implements Geocoder {
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) throw new Error(`Geocoder returned ${response.status}.`);
-    const data = (await response.json()) as Array<{ display_name: string; lat: string; lon: string }>;
+    const data = (await response.json()) as Array<{
+      display_name: string;
+      lat: string;
+      lon: string;
+    }>;
     return data.map((item) => ({
       label: item.display_name,
       lat: Number(item.lat),

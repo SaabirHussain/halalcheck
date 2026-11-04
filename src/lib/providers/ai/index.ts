@@ -11,9 +11,16 @@ export function getAIProvider(): AIProvider {
   }
   if (AI_PROVIDER === "openai" && !warned) {
     warned = true;
-    console.warn("OpenAI-compatible AI selected without complete credentials; using demo provider.");
+    console.warn(
+      "OpenAI-compatible AI selected without complete credentials; using demo provider.",
+    );
   }
   return new DemoAIProvider();
 }
 
-export type { AIProvider, OpenQuestion, ParsedReply, PublicClaim } from "./types";
+export type {
+  AIProvider,
+  OpenQuestion,
+  ParsedReply,
+  PublicClaim,
+} from "./types";

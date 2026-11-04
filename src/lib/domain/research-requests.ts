@@ -56,10 +56,16 @@ export async function requestResearch(
       : await tx
           .select({ id: investigations.id })
           .from(investigations)
-          .where(and(eq(investigations.branchId, branchId), eq(investigations.isActive, true)))
+          .where(
+            and(
+              eq(investigations.branchId, branchId),
+              eq(investigations.isActive, true),
+            ),
+          )
           .limit(1);
     const investigationId = created?.id ?? existing?.id;
-    if (!investigationId) throw new Error("Unable to create or join investigation.");
+    if (!investigationId)
+      throw new Error("Unable to create or join investigation.");
 
     await tx
       .insert(investigationSubscriptions)

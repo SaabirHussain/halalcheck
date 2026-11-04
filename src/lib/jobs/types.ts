@@ -13,7 +13,6 @@ export interface JobQueue {
 }
 
 export type JobContext = { jobId: string; attempt: number };
-export type JobHandler<T extends Record<string, unknown> = Record<string, unknown>> = (
-  payload: T,
-  context: JobContext,
-) => Promise<void>;
+export type JobHandler<
+  T extends Record<string, unknown> = Record<string, unknown>,
+> = (payload: T, context: JobContext) => Promise<void>;

@@ -14,7 +14,10 @@ export async function GET(
   try {
     await requireAdmin();
   } catch {
-    return NextResponse.json({ error: "Administrator access required." }, { status: 403 });
+    return NextResponse.json(
+      { error: "Administrator access required." },
+      { status: 403 },
+    );
   }
   const { id } = await context.params;
   const [document] = await db
@@ -26,10 +29,16 @@ export async function GET(
     .from(evidenceDocuments)
     .where(eq(evidenceDocuments.id, id))
     .limit(1);
-  if (!document) return NextResponse.json({ error: "Evidence document not found." }, { status: 404 });
+  if (!document)
+    return NextResponse.json(
+      { error: "Evidence document not found." },
+      { status: 404 },
+    );
   try {
     const bytes = await readEvidence(document.storageKey);
-    const filename = document.originalFilename.replace(/[\r\n"\\]/g, "_").slice(0, 120);
+    const filename = document.originalFilename
+      .replace(/[\r\n"\\]/g, "_")
+      .slice(0, 120);
     return new Response(new Uint8Array(bytes), {
       headers: {
         "Content-Type": document.mime,
@@ -40,6 +49,9 @@ export async function GET(
       },
     });
   } catch {
-    return NextResponse.json({ error: "Evidence file is unavailable." }, { status: 404 });
+    return NextResponse.json(
+      { error: "Evidence file is unavailable." },
+      { status: 404 },
+    );
   }
 }

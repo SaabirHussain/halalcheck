@@ -48,12 +48,19 @@ export class GooglePlacesProvider implements PlacesProvider {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(10_000),
     });
-    if (!response.ok) throw new Error(`Places provider returned ${response.status}.`);
+    if (!response.ok)
+      throw new Error(`Places provider returned ${response.status}.`);
     const payload = (await response.json()) as { places?: GooglePlace[] };
     return (payload.places ?? []).flatMap((place) => {
       const lat = place.location?.latitude;
       const lng = place.location?.longitude;
-      if (!place.id || !place.displayName?.text || !place.formattedAddress || lat == null || lng == null) {
+      if (
+        !place.id ||
+        !place.displayName?.text ||
+        !place.formattedAddress ||
+        lat == null ||
+        lng == null
+      ) {
         return [];
       }
       return [

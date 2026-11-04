@@ -2,4 +2,48 @@ import { db } from "@/db";
 import { investigations, outreachMessages, outreachThreads } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { simulateReplyAction } from "@/app/actions";
-export default async function InvestigationDetail({params}:{params:Promise<{id:string}>}){const {id}=await params;const [row]=await db.select().from(investigations).where(eq(investigations.id,id)).limit(1);if(!row)return <p>Investigation not found.</p>;const messages=await db.select({id:outreachMessages.id,subject:outreachMessages.subject,bodyText:outreachMessages.bodyText,status:outreachMessages.status}).from(outreachMessages).innerJoin(outreachThreads,eq(outreachMessages.threadId,outreachThreads.id)).where(eq(outreachThreads.investigationId,id));return <section><h2>{row.status.replaceAll("_"," ")}</h2><p>{row.stageDetail}</p>{messages.map(m=><article className="finding" key={m.id}><strong>{m.subject} · {m.status}</strong><p>{m.bodyText}</p></article>)}<form action={simulateReplyAction}><input type="hidden" name="investigationId" value={id}/><input type="hidden" name="reply" value="All our meat is halal."/><button className="button">Simulate vague business reply</button></form></section>}
+export default async function InvestigationDetail({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const [row] = await db
+    .select()
+    .from(investigations)
+    .where(eq(investigations.id, id))
+    .limit(1);
+  if (!row) return <p>Investigation not found.</p>;
+  const messages = await db
+    .select({
+      id: outreachMessages.id,
+      subject: outreachMessages.subject,
+      bodyText: outreachMessages.bodyText,
+      status: outreachMessages.status,
+    })
+    .from(outreachMessages)
+    .innerJoin(
+      outreachThreads,
+      eq(outreachMessages.threadId, outreachThreads.id),
+    )
+    .where(eq(outreachThreads.investigationId, id));
+  return (
+    <section>
+      <h2>{row.status.replaceAll("_", " ")}</h2>
+      <p>{row.stageDetail}</p>
+      {messages.map((m) => (
+        <article className="finding" key={m.id}>
+          <strong>
+            {m.subject} · {m.status}
+          </strong>
+          <p>{m.bodyText}</p>
+        </article>
+      ))}
+      <form action={simulateReplyAction}>
+        <input type="hidden" name="investigationId" value={id} />
+        <input type="hidden" name="reply" value="All our meat is halal." />
+        <button className="button">Simulate vague business reply</button>
+      </form>
+    </section>
+  );
+}

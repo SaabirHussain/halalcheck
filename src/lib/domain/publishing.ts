@@ -36,7 +36,12 @@ export async function publishProposedUpdate(
   const [proposal] = await database
     .select()
     .from(proposedUpdates)
-    .where(and(eq(proposedUpdates.id, proposalId), eq(proposedUpdates.status, "pending")))
+    .where(
+      and(
+        eq(proposedUpdates.id, proposalId),
+        eq(proposedUpdates.status, "pending"),
+      ),
+    )
     .limit(1);
   if (!proposal) throw new Error("Pending proposal not found.");
   const approvedIds = [...new Set(input.approvedClaimIds)];
@@ -46,11 +51,18 @@ export async function publishProposedUpdate(
     ? await database
         .select()
         .from(claims)
-        .where(and(eq(claims.branchId, proposal.branchId), inArray(claims.id, candidateIds)))
+        .where(
+          and(
+            eq(claims.branchId, proposal.branchId),
+            inArray(claims.id, candidateIds),
+          ),
+        )
     : [];
-  if (candidateClaims.length !== candidateIds.length) throw new Error("Claim does not belong to this proposal branch.");
+  if (candidateClaims.length !== candidateIds.length)
+    throw new Error("Claim does not belong to this proposal branch.");
   for (const claim of candidateClaims) {
-    if (claim.proposedUpdateId !== proposal.id) throw new Error("Claim is not part of this proposal.");
+    if (claim.proposedUpdateId !== proposal.id)
+      throw new Error("Claim is not part of this proposal.");
   }
 
   const materialIds = new Set(
@@ -61,7 +73,9 @@ export async function publishProposedUpdate(
   const confirmed = new Set(input.confirmedMaterialChangeIds ?? []);
   for (const claimId of approvedIds) {
     if (materialIds.has(claimId) && !confirmed.has(claimId)) {
-      throw new Error("Material changes require explicit per-claim confirmation.");
+      throw new Error(
+        "Material changes require explicit per-claim confirmation.",
+      );
     }
   }
   const now = new Date();
@@ -73,7 +87,9 @@ export async function publishProposedUpdate(
       .orderBy(desc(publishedRevisions.revisionNumber))
       .limit(1);
     const revisionNumber = (latest?.revisionNumber ?? 0) + 1;
-    const approvedClaims = candidateClaims.filter((claim) => approvedIds.includes(claim.id));
+    const approvedClaims = candidateClaims.filter((claim) =>
+      approvedIds.includes(claim.id),
+    );
     const sourcesById = approvedClaims.length
       ? await tx
           .select({
@@ -90,7 +106,9 @@ export async function publishProposedUpdate(
             and(
               inArray(
                 sources.id,
-                approvedClaims.flatMap((claim) => (claim.sourceId ? [claim.sourceId] : [])),
+                approvedClaims.flatMap((claim) =>
+                  claim.sourceId ? [claim.sourceId] : [],
+                ),
               ),
             ),
           )
@@ -106,10 +124,18 @@ export async function publishProposedUpdate(
               retrievedAt: source.retrievedAt,
               publicExcerpt: source.publicExcerpt,
             }
-          : { kind: source.kind, retrievedAt: source.retrievedAt, isPrivate: true as const },
+          : {
+              kind: source.kind,
+              retrievedAt: source.retrievedAt,
+              isPrivate: true as const,
+            },
       ]),
     );
-    const publicSourceIds = new Set(sourcesById.filter((source) => source.isPublic).map((source) => source.id));
+    const publicSourceIds = new Set(
+      sourcesById
+        .filter((source) => source.isPublic)
+        .map((source) => source.id),
+    );
     const snapshot = {
       claims: approvedClaims.map((claim) => ({
         id: claim.id,
@@ -119,10 +145,11 @@ export async function publishProposedUpdate(
         valueEnum: claim.valueEnum,
         evidenceCategory: claim.evidenceCategory,
         confirmedAt: claim.confirmedAt,
-        source: claim.sourceId ? sourceMap.get(claim.sourceId) ?? null : null,
-        publicExcerpt: claim.sourceId && publicSourceIds.has(claim.sourceId)
-          ? redactPublicExcerpt(claim.supportingExcerpt)
-          : null,
+        source: claim.sourceId ? (sourceMap.get(claim.sourceId) ?? null) : null,
+        publicExcerpt:
+          claim.sourceId && publicSourceIds.has(claim.sourceId)
+            ? redactPublicExcerpt(claim.supportingExcerpt)
+            : null,
       })),
       unansweredQuestions: proposal.unansweredQuestions,
     };
@@ -137,7 +164,9 @@ export async function publishProposedUpdate(
         changeSummary: input.changeSummary.trim(),
         publicSummary: input.publicSummary.trim(),
         snapshot,
-        outcome: approvedClaims.length ? "findings_published" : "unable_to_confirm",
+        outcome: approvedClaims.length
+          ? "findings_published"
+          : "unable_to_confirm",
       })
       .returning();
     if (!created) throw new Error("Could not create published revision.");
@@ -186,10 +215,16 @@ export async function publishProposedUpdate(
     await tx
       .update(branches)
       .set({
-        researchStatus: approvedClaims.length ? "findings_published" : "unable_to_confirm",
+        researchStatus: approvedClaims.length
+          ? "findings_published"
+          : "unable_to_confirm",
         lastReviewedAt: now,
         ...(confirmedDates.length
-          ? { lastConfirmedAt: new Date(`${confirmedDates.at(-1)}T00:00:00.000Z`) }
+          ? {
+              lastConfirmedAt: new Date(
+                `${confirmedDates.at(-1)}T00:00:00.000Z`,
+              ),
+            }
           : {}),
         updatedAt: now,
       })
@@ -198,7 +233,9 @@ export async function publishProposedUpdate(
       await tx
         .update(investigations)
         .set({
-          status: approvedClaims.length ? "findings_published" : "unable_to_confirm",
+          status: approvedClaims.length
+            ? "findings_published"
+            : "unable_to_confirm",
           isActive: false,
           outcome: approvedClaims.length ? "published" : "unable to confirm",
           updatedAt: now,
@@ -211,7 +248,11 @@ export async function publishProposedUpdate(
       action: "findings_published",
       entityType: "published_revision",
       entityId: created.id,
-      metadata: { branchId: proposal.branchId, revisionNumber, approvedClaimCount: approvedClaims.length },
+      metadata: {
+        branchId: proposal.branchId,
+        revisionNumber,
+        approvedClaimCount: approvedClaims.length,
+      },
     });
     return [created] as const;
   });
@@ -231,8 +272,18 @@ export async function rejectProposedUpdate(
   const admin = await requireAdminActor(actor, database);
   const [proposal] = await database
     .update(proposedUpdates)
-    .set({ status: "rejected", reviewedBy: admin.id, reviewedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(proposedUpdates.id, proposalId), eq(proposedUpdates.status, "pending")))
+    .set({
+      status: "rejected",
+      reviewedBy: admin.id,
+      reviewedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(proposedUpdates.id, proposalId),
+        eq(proposedUpdates.status, "pending"),
+      ),
+    )
     .returning({ id: proposedUpdates.id });
   if (!proposal) throw new Error("Pending proposal not found.");
   await writeAudit(database, {

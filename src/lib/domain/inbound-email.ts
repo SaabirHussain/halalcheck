@@ -34,11 +34,19 @@ export async function ingestInboundEmail(
   database: typeof defaultDb = defaultDb,
 ) {
   if (actor.type === "admin") await requireAdminActor(actor, database);
-  if (actor.type !== "system" && actor.type !== "worker" && actor.type !== "admin") {
+  if (
+    actor.type !== "system" &&
+    actor.type !== "worker" &&
+    actor.type !== "admin"
+  ) {
     throw new Error("Inbound email ingestion requires a trusted actor.");
   }
   const payloadHash = createHash("sha256")
-    .update([input.provider, input.from, input.to, input.subject, input.text].join("\0"))
+    .update(
+      [input.provider, input.from, input.to, input.subject, input.text].join(
+        "\0",
+      ),
+    )
     .digest("hex");
   const result = await database.transaction(async (tx) => {
     const [event] = await tx
@@ -48,11 +56,23 @@ export async function ingestInboundEmail(
       .returning({ id: webhookEvents.id });
     if (!event) {
       const [existing] = await tx
-        .select({ id: outreachMessages.id, threadId: outreachMessages.threadId })
+        .select({
+          id: outreachMessages.id,
+          threadId: outreachMessages.threadId,
+        })
         .from(outreachMessages)
-        .where(eq(outreachMessages.idempotencyKey, `inbound:${input.provider}:${input.eventId}`))
+        .where(
+          eq(
+            outreachMessages.idempotencyKey,
+            `inbound:${input.provider}:${input.eventId}`,
+          ),
+        )
         .limit(1);
-      return { duplicate: true, matched: Boolean(existing), messageId: existing?.id ?? null };
+      return {
+        duplicate: true,
+        matched: Boolean(existing),
+        messageId: existing?.id ?? null,
+      };
     }
 
     const token = input.to.match(/reply\+([a-z0-9-]+)@/i)?.[1];
@@ -66,14 +86,21 @@ export async function ingestInboundEmail(
         .limit(1);
     }
     if (!thread) {
-      const refs = [input.inReplyTo, ...(input.references ?? "").split(/\s+/)].filter(
-        (value): value is string => Boolean(value),
-      );
+      const refs = [
+        input.inReplyTo,
+        ...(input.references ?? "").split(/\s+/),
+      ].filter((value): value is string => Boolean(value));
       if (refs.length) {
         const [outbound] = await tx
           .select({ threadId: outreachMessages.threadId })
           .from(outreachMessages)
-          .where(or(...refs.map((reference) => eq(outreachMessages.messageIdHeader, reference))))
+          .where(
+            or(
+              ...refs.map((reference) =>
+                eq(outreachMessages.messageIdHeader, reference),
+              ),
+            ),
+          )
           .limit(1);
         if (outbound) {
           [thread] = await tx
@@ -95,7 +122,10 @@ export async function ingestInboundEmail(
         receivedAt: input.receivedAt,
         reviewStatus: "unmatched",
       });
-      await tx.update(webhookEvents).set({ processedAt: new Date() }).where(eq(webhookEvents.id, event.id));
+      await tx
+        .update(webhookEvents)
+        .set({ processedAt: new Date() })
+        .where(eq(webhookEvents.id, event.id));
       await writeAudit(tx, {
         actorType: "system",
         action: "unexpected_reply_received",
@@ -108,7 +138,12 @@ export async function ingestInboundEmail(
     const [previous] = await tx
       .select({ sequence: outreachMessages.sequence })
       .from(outreachMessages)
-      .where(and(eq(outreachMessages.threadId, thread.id), eq(outreachMessages.direction, "inbound")))
+      .where(
+        and(
+          eq(outreachMessages.threadId, thread.id),
+          eq(outreachMessages.direction, "inbound"),
+        ),
+      )
       .orderBy(desc(outreachMessages.sequence))
       .limit(1);
     const sequence = (previous?.sequence ?? 0) + 1;
@@ -132,27 +167,39 @@ export async function ingestInboundEmail(
       .onConflictDoNothing()
       .returning({ id: outreachMessages.id });
     if (!message) {
-      await tx.update(webhookEvents).set({ processedAt: new Date() }).where(eq(webhookEvents.id, event.id));
+      await tx
+        .update(webhookEvents)
+        .set({ processedAt: new Date() })
+        .where(eq(webhookEvents.id, event.id));
       return { duplicate: true, matched: true, messageId: null };
     }
-    await tx.insert(sources).values({
-      investigationId: thread.investigationId,
-      branchId: thread.branchId,
-      kind: "email_reply",
-      title: `Business reply received ${input.receivedAt.toISOString()}`,
-      retrievedAt: input.receivedAt,
-      rawText: input.text,
-      isPublic: false,
-      messageId: message.id,
-      idempotencyKey: `inbound:${input.provider}:${input.eventId}`,
-    }).onConflictDoNothing();
-    await tx.update(webhookEvents).set({ processedAt: new Date() }).where(eq(webhookEvents.id, event.id));
+    await tx
+      .insert(sources)
+      .values({
+        investigationId: thread.investigationId,
+        branchId: thread.branchId,
+        kind: "email_reply",
+        title: `Business reply received ${input.receivedAt.toISOString()}`,
+        retrievedAt: input.receivedAt,
+        rawText: input.text,
+        isPublic: false,
+        messageId: message.id,
+        idempotencyKey: `inbound:${input.provider}:${input.eventId}`,
+      })
+      .onConflictDoNothing();
+    await tx
+      .update(webhookEvents)
+      .set({ processedAt: new Date() })
+      .where(eq(webhookEvents.id, event.id));
     await writeAudit(tx, {
       actorType: "system",
       action: "inbound_reply_ingested",
       entityType: "outreach_message",
       entityId: message.id,
-      metadata: { provider: input.provider, investigationId: thread.investigationId },
+      metadata: {
+        provider: input.provider,
+        investigationId: thread.investigationId,
+      },
     });
     return { duplicate: false, matched: true, messageId: message.id };
   });
@@ -168,14 +215,29 @@ export async function ingestInboundEmail(
 
 export async function ingestBounceEvent(
   actor: Actor,
-  input: { provider: string; eventId: string; recipient: string; messageId: string; permanent: boolean; payloadHash?: string },
+  input: {
+    provider: string;
+    eventId: string;
+    recipient: string;
+    messageId: string;
+    permanent: boolean;
+    payloadHash?: string;
+  },
   database: typeof defaultDb = defaultDb,
 ) {
-  if (actor.type !== "system" && actor.type !== "worker") throw new Error("Worker access required.");
-  const payloadHash = input.payloadHash ?? createHash("sha256").update(JSON.stringify(input)).digest("hex");
+  if (actor.type !== "system" && actor.type !== "worker")
+    throw new Error("Worker access required.");
+  const payloadHash =
+    input.payloadHash ??
+    createHash("sha256").update(JSON.stringify(input)).digest("hex");
   const [event] = await database
     .insert(webhookEvents)
-    .values({ provider: input.provider, eventId: input.eventId, payloadHash, processedAt: new Date() })
+    .values({
+      provider: input.provider,
+      eventId: input.eventId,
+      payloadHash,
+      processedAt: new Date(),
+    })
     .onConflictDoNothing()
     .returning({ id: webhookEvents.id });
   if (!event) return { duplicate: true };
@@ -183,7 +245,12 @@ export async function ingestBounceEvent(
   const [message] = await database
     .select({ id: outreachMessages.id, threadId: outreachMessages.threadId })
     .from(outreachMessages)
-    .where(or(eq(outreachMessages.providerMessageId, input.messageId), eq(outreachMessages.messageIdHeader, input.messageId)))
+    .where(
+      or(
+        eq(outreachMessages.providerMessageId, input.messageId),
+        eq(outreachMessages.messageIdHeader, input.messageId),
+      ),
+    )
     .limit(1);
   if (!message) return { duplicate: false, suppressed: false };
   const [thread] = await database
@@ -192,8 +259,15 @@ export async function ingestBounceEvent(
     .where(eq(outreachThreads.id, message.threadId))
     .limit(1);
   await database.transaction(async (tx) => {
-    await tx.update(outreachMessages).set({ status: "failed", updatedAt: new Date() }).where(eq(outreachMessages.id, message.id));
-    if (thread) await tx.update(outreachThreads).set({ status: "bounced", updatedAt: new Date() }).where(eq(outreachThreads.id, thread.id));
+    await tx
+      .update(outreachMessages)
+      .set({ status: "failed", updatedAt: new Date() })
+      .where(eq(outreachMessages.id, message.id));
+    if (thread)
+      await tx
+        .update(outreachThreads)
+        .set({ status: "bounced", updatedAt: new Date() })
+        .where(eq(outreachThreads.id, thread.id));
     await tx
       .insert(suppressions)
       .values({

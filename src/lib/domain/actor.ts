@@ -35,8 +35,10 @@ export async function requireAdminActor(
   actor: Actor,
   database: typeof defaultDb = defaultDb,
 ) {
-  if (actor.type !== "admin") throw new ForbiddenError("Administrator access required.");
+  if (actor.type !== "admin")
+    throw new ForbiddenError("Administrator access required.");
   const user = await requireActorUser(actor, database);
-  if (user.role !== "admin") throw new ForbiddenError("Administrator access required.");
+  if (user.role !== "admin")
+    throw new ForbiddenError("Administrator access required.");
   return user;
 }

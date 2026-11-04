@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import PgBoss from "pg-boss";
 import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { investigations, jobRuns, outreachMessages, outreachThreads } from "@/db/schema";
+import {
+  investigations,
+  jobRuns,
+  outreachMessages,
+  outreachThreads,
+} from "@/db/schema";
 import type { EnqueueOptions, JobHandler, JobQueue } from "./types";
 
 export class PgBossQueue implements JobQueue {
@@ -17,14 +22,21 @@ export class PgBossQueue implements JobQueue {
     options: EnqueueOptions = {},
   ) {
     const idempotencyKey =
-      options.idempotencyKey ?? options.singletonKey ?? `${name}:${randomUUID()}`;
+      options.idempotencyKey ??
+      options.singletonKey ??
+      `${name}:${randomUUID()}`;
     let investigationId =
-      typeof payload.investigationId === "string" ? payload.investigationId : null;
+      typeof payload.investigationId === "string"
+        ? payload.investigationId
+        : null;
     if (!investigationId && typeof payload.messageId === "string") {
       const [message] = await this.database
         .select({ investigationId: outreachThreads.investigationId })
         .from(outreachMessages)
-        .innerJoin(outreachThreads, eq(outreachMessages.threadId, outreachThreads.id))
+        .innerJoin(
+          outreachThreads,
+          eq(outreachMessages.threadId, outreachThreads.id),
+        )
         .where(eq(outreachMessages.id, payload.messageId))
         .limit(1);
       investigationId = message?.investigationId ?? null;
@@ -70,13 +82,20 @@ export class PgBossQueue implements JobQueue {
     } else {
       await this.database
         .update(jobRuns)
-        .set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
+        .set({
+          status: "cancelled",
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
         .where(eq(jobRuns.id, run.id));
     }
     return jobId;
   }
 
-  async register<T extends Record<string, unknown>>(name: string, handler: JobHandler<T>) {
+  async register<T extends Record<string, unknown>>(
+    name: string,
+    handler: JobHandler<T>,
+  ) {
     await this.boss.createQueue(name, { name });
     return this.boss.work<T>(
       name,
@@ -95,7 +114,12 @@ export class PgBossQueue implements JobQueue {
           if (run) {
             await this.database
               .update(jobRuns)
-              .set({ status: "running", startedAt: new Date(), attempts: run.attempts + 1, updatedAt: new Date() })
+              .set({
+                status: "running",
+                startedAt: new Date(),
+                attempts: run.attempts + 1,
+                updatedAt: new Date(),
+              })
               .where(eq(jobRuns.id, run.id));
           }
           try {
@@ -106,7 +130,11 @@ export class PgBossQueue implements JobQueue {
             if (run) {
               await this.database
                 .update(jobRuns)
-                .set({ status: "succeeded", finishedAt: new Date(), updatedAt: new Date() })
+                .set({
+                  status: "succeeded",
+                  finishedAt: new Date(),
+                  updatedAt: new Date(),
+                })
                 .where(eq(jobRuns.id, run.id));
             }
           } catch (error) {
@@ -125,7 +153,10 @@ export class PgBossQueue implements JobQueue {
               if (exhausted && run.investigationId) {
                 await this.database
                   .update(investigations)
-                  .set({ stageDetail: `Stage failed: ${safeError}`, updatedAt: new Date() })
+                  .set({
+                    stageDetail: `Stage failed: ${safeError}`,
+                    updatedAt: new Date(),
+                  })
                   .where(eq(investigations.id, run.investigationId));
               }
             }
@@ -140,7 +171,10 @@ export class PgBossQueue implements JobQueue {
 function sanitizeJobError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unknown job error";
   return message
-    .replace(/(api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .replace(
+      /(api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi,
+      "$1=[redacted]",
+    )
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[redacted email]")
     .slice(0, 500);
 }

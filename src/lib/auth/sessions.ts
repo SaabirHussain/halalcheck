@@ -11,7 +11,10 @@ export function hashSessionToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export async function createSession(userId: string, database: typeof defaultDb = defaultDb) {
+export async function createSession(
+  userId: string,
+  database: typeof defaultDb = defaultDb,
+) {
   const token = randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
   await database.insert(sessions).values({
@@ -74,11 +77,15 @@ export async function getCurrentUser(database: typeof defaultDb = defaultDb) {
   return session.user;
 }
 
-export async function revokeCurrentSession(database: typeof defaultDb = defaultDb) {
+export async function revokeCurrentSession(
+  database: typeof defaultDb = defaultDb,
+) {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE)?.value;
   if (token) {
-    await database.delete(sessions).where(eq(sessions.tokenHash, hashSessionToken(token)));
+    await database
+      .delete(sessions)
+      .where(eq(sessions.tokenHash, hashSessionToken(token)));
   }
   cookieStore.delete(SESSION_COOKIE);
 }

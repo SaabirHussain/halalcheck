@@ -14,9 +14,15 @@ export async function authenticateUser(
   const normalizedEmail = email.trim().toLowerCase();
   const [ipLimit, emailLimit] = await Promise.all([
     consumeRateLimit(database, `login:ip:${clientIp}`, 20, 60 * 60 * 1000),
-    consumeRateLimit(database, `login:email:${normalizedEmail}`, 10, 60 * 60 * 1000),
+    consumeRateLimit(
+      database,
+      `login:email:${normalizedEmail}`,
+      10,
+      60 * 60 * 1000,
+    ),
   ]);
-  if (!ipLimit.allowed || !emailLimit.allowed) throw new Error("Invalid email or password.");
+  if (!ipLimit.allowed || !emailLimit.allowed)
+    throw new Error("Invalid email or password.");
   const [user] = await database
     .select()
     .from(users)
@@ -26,7 +32,12 @@ export async function authenticateUser(
     throw new Error("Invalid email or password.");
   }
   await createSession(user.id, database);
-  return { id: user.id, email: user.email, displayName: user.displayName, role: user.role };
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.displayName,
+    role: user.role,
+  };
 }
 
 export async function registerUser(
@@ -39,15 +50,30 @@ export async function registerUser(
   const normalizedEmail = email.trim().toLowerCase();
   const [ipLimit, emailLimit] = await Promise.all([
     consumeRateLimit(database, `signup:ip:${clientIp}`, 10, 60 * 60 * 1000),
-    consumeRateLimit(database, `signup:email:${normalizedEmail}`, 5, 60 * 60 * 1000),
+    consumeRateLimit(
+      database,
+      `signup:email:${normalizedEmail}`,
+      5,
+      60 * 60 * 1000,
+    ),
   ]);
-  if (!ipLimit.allowed || !emailLimit.allowed) throw new Error("Unable to create account.");
+  if (!ipLimit.allowed || !emailLimit.allowed)
+    throw new Error("Unable to create account.");
   const passwordHash = await hashPassword(password);
   const [user] = await database
     .insert(users)
-    .values({ email: normalizedEmail, passwordHash, displayName: displayName.trim() })
+    .values({
+      email: normalizedEmail,
+      passwordHash,
+      displayName: displayName.trim(),
+    })
     .onConflictDoNothing()
-    .returning({ id: users.id, email: users.email, displayName: users.displayName, role: users.role });
+    .returning({
+      id: users.id,
+      email: users.email,
+      displayName: users.displayName,
+      role: users.role,
+    });
   if (!user) throw new Error("Unable to create account.");
   await createSession(user.id, database);
   return user;

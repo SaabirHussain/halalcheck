@@ -5,7 +5,9 @@ import type { EmailProvider } from "./types";
 
 let warned = false;
 
-export function getEmailProvider(database: typeof defaultDb = defaultDb): EmailProvider {
+export function getEmailProvider(
+  database: typeof defaultDb = defaultDb,
+): EmailProvider {
   if (
     process.env.EMAIL_PROVIDER === "mailgun" &&
     process.env.MAILGUN_API_KEY &&
@@ -19,7 +21,9 @@ export function getEmailProvider(database: typeof defaultDb = defaultDb): EmailP
   }
   if (process.env.EMAIL_PROVIDER === "mailgun" && !warned) {
     warned = true;
-    console.warn("Mailgun selected without credentials; using captured demo email.");
+    console.warn(
+      "Mailgun selected without credentials; using captured demo email.",
+    );
   }
   return new DemoEmailProvider(database);
 }

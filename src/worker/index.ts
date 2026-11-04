@@ -5,7 +5,8 @@ import { PgBossQueue } from "@/lib/jobs/pg-boss";
 import { buildJobHandlers } from "./handlers";
 
 const connectionString = process.env.DATABASE_URL;
-if (!connectionString) throw new Error("DATABASE_URL is required to start the worker.");
+if (!connectionString)
+  throw new Error("DATABASE_URL is required to start the worker.");
 
 const boss = new PgBoss({
   connectionString,
@@ -26,9 +27,18 @@ await boss.schedule(
   {},
   { singletonKey: "investigations.reconcile", tz: "UTC" },
 );
-await boss.schedule("refresh.scan", "0 3 * * *", {}, { singletonKey: "refresh.scan", tz: "UTC" });
-console.info(`Worker ready; registered queues: ${Object.keys(handlers).join(", ")}`);
-console.info("Schedules registered: investigations.reconcile every 2m; refresh.scan daily at 03:00 UTC.");
+await boss.schedule(
+  "refresh.scan",
+  "0 3 * * *",
+  {},
+  { singletonKey: "refresh.scan", tz: "UTC" },
+);
+console.info(
+  `Worker ready; registered queues: ${Object.keys(handlers).join(", ")}`,
+);
+console.info(
+  "Schedules registered: investigations.reconcile every 2m; refresh.scan daily at 03:00 UTC.",
+);
 
 const shutdown = async () => {
   await boss.stop({ graceful: true, timeout: 10_000 });

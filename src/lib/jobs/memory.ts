@@ -5,7 +5,10 @@ export class InlineJobQueue implements JobQueue {
   private readonly seenSingletonKeys = new Set<string>();
   private sequence = 0;
 
-  register<T extends Record<string, unknown>>(name: string, handler: JobHandler<T>) {
+  register<T extends Record<string, unknown>>(
+    name: string,
+    handler: JobHandler<T>,
+  ) {
     this.handlers.set(name, handler as JobHandler);
   }
 
@@ -14,7 +17,11 @@ export class InlineJobQueue implements JobQueue {
     payload: T,
     options: EnqueueOptions = {},
   ) {
-    if (options.singletonKey && this.seenSingletonKeys.has(options.singletonKey)) return null;
+    if (
+      options.singletonKey &&
+      this.seenSingletonKeys.has(options.singletonKey)
+    )
+      return null;
     if (options.singletonKey) this.seenSingletonKeys.add(options.singletonKey);
     const id = `inline-${++this.sequence}`;
     const startAfter =
