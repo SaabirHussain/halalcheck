@@ -11,7 +11,7 @@ const registerSchema = z.object({
   token: z.string().trim().min(1).max(4096),
 });
 const removeSchema = z.object({ token: z.string().trim().min(1).max(4096) });
-type SessionUser = { id: string } | null;
+type SessionUser = { id: string; sessionId: string } | null;
 type Database = typeof defaultDb;
 
 export async function handlePushDevicesRequest(
@@ -20,7 +20,10 @@ export async function handlePushDevicesRequest(
   database: Database = defaultDb,
 ) {
   if (!user)
-    return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+    return NextResponse.json(
+      { error: "Authentication required." },
+      { status: 401 },
+    );
   const rate = await consumeRateLimit(
     database,
     `push-devices:${user.id}`,
@@ -37,15 +40,24 @@ export async function handlePushDevicesRequest(
   if (request.method === "POST") {
     const parsed = registerSchema.safeParse(body);
     if (!parsed.success)
-      return NextResponse.json({ error: "Invalid push device." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Invalid push device." },
+        { status: 400 },
+      );
     const now = new Date();
     const [device] = await database
       .insert(pushDevices)
-      .values({ ...parsed.data, userId: user.id, lastSeenAt: now })
+      .values({
+        ...parsed.data,
+        userId: user.id,
+        sessionId: user.sessionId,
+        lastSeenAt: now,
+      })
       .onConflictDoUpdate({
         target: pushDevices.token,
         set: {
           userId: user.id,
+          sessionId: user.sessionId,
           platform: parsed.data.platform,
           lastSeenAt: now,
         },
@@ -57,7 +69,10 @@ export async function handlePushDevicesRequest(
   if (request.method === "DELETE") {
     const parsed = removeSchema.safeParse(body);
     if (!parsed.success)
-      return NextResponse.json({ error: "Invalid push device." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Invalid push device." },
+        { status: 400 },
+      );
     await database
       .delete(pushDevices)
       .where(

@@ -183,10 +183,11 @@ export const notificationTypeEnum = pgEnum("notification_type", [
   "correction_reviewed",
 ]);
 export const pushPlatformEnum = pgEnum("push_platform", ["ios", "android"]);
-export const notificationPushStatusEnum = pgEnum(
-  "notification_push_status",
-  ["captured", "sent", "failed"],
-);
+export const notificationPushStatusEnum = pgEnum("notification_push_status", [
+  "captured",
+  "sent",
+  "failed",
+]);
 export const auditActorEnum = pgEnum("audit_actor_type", [
   "user",
   "admin",
@@ -974,6 +975,9 @@ export const pushDevices = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id").references(() => sessions.id, {
+      onDelete: "cascade",
+    }),
     platform: pushPlatformEnum("platform").notNull(),
     token: text("token").notNull().unique(),
     createdAt: timestamp("created_at", { withTimezone: true })

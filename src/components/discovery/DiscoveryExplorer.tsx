@@ -32,6 +32,15 @@ function activeFilterCount(filters: DiscoveryFilterState) {
   ].filter(Boolean).length;
 }
 
+function isNativeLocationTimeout(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "OS-PLUG-GLOC-0010"
+  );
+}
+
 function toSearchParams(filters: DiscoveryFilterState) {
   const params = new URLSearchParams();
   if (filters.q.trim()) params.set("q", filters.q.trim());
@@ -125,11 +134,26 @@ export function DiscoveryExplorer({
           );
           return;
         }
-        const { coords } = await Geolocation.getCurrentPosition({
-          timeout: 10_000,
-          maximumAge: 60_000,
-        });
-        updateLocation(coords.latitude, coords.longitude);
+        let position: Awaited<
+          ReturnType<typeof Geolocation.getCurrentPosition>
+        >;
+        try {
+          position = await Geolocation.getCurrentPosition({
+            enableHighAccuracy: true,
+            enableLocationFallback: true,
+            timeout: 15_000,
+            maximumAge: 0,
+          });
+        } catch (error) {
+          if (!isNativeLocationTimeout(error)) throw error;
+          position = await Geolocation.getCurrentPosition({
+            enableHighAccuracy: false,
+            enableLocationFallback: true,
+            timeout: 10_000,
+            maximumAge: 60_000,
+          });
+        }
+        updateLocation(position.coords.latitude, position.coords.longitude);
       } catch {
         setLocationMessage(
           "We couldn’t determine your location. Enter a city or address to search nearby.",

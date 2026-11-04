@@ -50,7 +50,10 @@ export default async function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} ${fraunces.variable}`}>
       <body className="min-h-screen bg-background font-sans text-ink">
-        <NativeShell userId={user?.id ?? null} />
+        <NativeShell
+          userId={user?.id ?? null}
+          pushEnabled={process.env.PUSH_PROVIDER === "fcm-apns"}
+        />
         <SiteHeader user={user} unreadCount={unread?.value ?? 0} />
         <OfflineBanner />
         <DemoBanner />

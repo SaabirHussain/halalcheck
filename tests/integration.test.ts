@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { Response as UndiciResponse, fetch as undiciFetch } from "undici";
 import type PgBoss from "pg-boss";
@@ -18,6 +18,7 @@ import {
   schema,
   auditEvents,
   users,
+  sessions,
   businesses,
   branches,
   investigations,
@@ -91,6 +92,7 @@ import {
   type PgBossQueue,
 } from "@/lib/jobs/pg-boss";
 import { authenticateUser } from "@/lib/auth/service";
+import { hashSessionToken, revokeSessionByToken } from "@/lib/auth/sessions";
 import type { EmailProvider } from "@/lib/providers/email/types";
 
 process.env.EMAIL_PROVIDER = "demo";
@@ -129,6 +131,19 @@ async function createUser(
     .values({ email, passwordHash: "not-used", displayName: role, role })
     .returning();
   return user!;
+}
+
+async function createPushSession(userId: string) {
+  const token = randomBytes(32).toString("hex");
+  const [session] = await database
+    .insert(sessions)
+    .values({
+      tokenHash: hashSessionToken(token),
+      userId,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    })
+    .returning({ id: sessions.id });
+  return { id: session!.id, token };
 }
 
 async function createBranch(
@@ -1682,7 +1697,9 @@ describe("publication notifications and fixture coverage", () => {
       await notifyFollowers({ type: "worker" }, revision!.id, queue, database),
     ).toBe(0);
     expect(await database.select().from(notifications)).toHaveLength(1);
-    expect(calls.filter((call) => call.name === "notification.push")).toHaveLength(1);
+    expect(
+      calls.filter((call) => call.name === "notification.push"),
+    ).toHaveLength(1);
   });
 
   it("records off-question clarification claims and flags conflicting website evidence", async () => {
@@ -2134,29 +2151,74 @@ describe("native push registration and delivery", () => {
   it("upserts tokens idempotently and transfers them to the current user", async () => {
     const firstUser = await createUser("user", "push-first@example.test");
     const secondUser = await createUser("user", "push-second@example.test");
-    const register = (userId: string, platform: "ios" | "android") =>
+    const firstSession = await createPushSession(firstUser.id);
+    const secondSession = await createPushSession(secondUser.id);
+    const register = (
+      userId: string,
+      sessionId: string,
+      platform: "ios" | "android",
+    ) =>
       handlePushDevicesRequest(
         new Request("http://localhost/api/me/push-devices", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ platform, token: "shared-demo-token" }),
         }),
-        { id: userId },
+        { id: userId, sessionId },
         database,
       );
 
-    const first = await register(firstUser.id, "android");
-    const repeated = await register(firstUser.id, "android");
+    const first = await register(firstUser.id, firstSession.id, "android");
+    const repeated = await register(firstUser.id, firstSession.id, "android");
     expect(first.status).toBe(200);
     expect(repeated.status).toBe(200);
+    const [firstDevice] = await database.select().from(pushDevices);
+    expect(firstDevice!.sessionId).toBe(firstSession.id);
     expect(await database.select().from(pushDevices)).toHaveLength(1);
 
-    const transferred = await register(secondUser.id, "ios");
+    const transferred = await register(secondUser.id, secondSession.id, "ios");
     expect(transferred.status).toBe(200);
     const [device] = await database.select().from(pushDevices);
     expect(device!.userId).toBe(secondUser.id);
+    expect(device!.sessionId).toBe(secondSession.id);
     expect(device!.platform).toBe("ios");
     expect(await database.select().from(pushDevices)).toHaveLength(1);
+  });
+
+  it("deletes a registered device when its session is revoked", async () => {
+    const user = await createUser();
+    const session = await createPushSession(user.id);
+    const response = await handlePushDevicesRequest(
+      new Request("http://localhost/api/me/push-devices", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          platform: "android",
+          token: "session-device-token",
+        }),
+      }),
+      { id: user.id, sessionId: session.id },
+      database,
+    );
+    expect(response.status).toBe(200);
+    expect(
+      await database
+        .select()
+        .from(pushDevices)
+        .where(eq(pushDevices.sessionId, session.id)),
+    ).toHaveLength(1);
+
+    await revokeSessionByToken(session.token, database);
+
+    expect(
+      await database.select().from(sessions).where(eq(sessions.id, session.id)),
+    ).toHaveLength(0);
+    expect(
+      await database
+        .select()
+        .from(pushDevices)
+        .where(eq(pushDevices.sessionId, session.id)),
+    ).toHaveLength(0);
   });
 
   it("records one demo delivery per device when a push job is retried", async () => {

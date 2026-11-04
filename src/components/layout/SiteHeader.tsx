@@ -74,7 +74,7 @@ export function SiteHeader({
                     Admin workspace
                   </Link>
                 ) : null}
-                <form action={signOutAction} data-native-sign-out="true">
+                <form action={signOutAction}>
                   <button
                     className="min-h-11 w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-surface-2"
                     type="submit"
