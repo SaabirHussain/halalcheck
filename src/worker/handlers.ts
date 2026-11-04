@@ -10,9 +10,11 @@ import {
   certifiers,
   contactEndpoints,
   investigations,
+  notifications,
   outreachMessages,
   outreachSettings,
   outreachThreads,
+  pushDevices,
   sources,
 } from "@/db/schema";
 import { getAIProvider } from "@/lib/providers/ai";
@@ -20,6 +22,7 @@ import { SSRFSafeFetcher } from "@/lib/providers/fetcher";
 import { createOutreachDraft, sendOutreach } from "@/lib/domain/outreach";
 import { parseInboundReply, reviewEvidence } from "@/lib/domain/claims";
 import { notifyFollowers } from "@/lib/domain/notifications";
+import { getPushProvider } from "@/lib/providers/push";
 import { reconcileInvestigations, refreshScan } from "@/lib/domain/refresh";
 import { isExcerptInText } from "@/lib/providers/ai/openai";
 
@@ -454,8 +457,35 @@ export function buildJobHandlers(
       await notifyFollowers(
         workerActor,
         requiredString(payload.revisionId, "revisionId"),
+        queue,
         database,
       );
+    },
+
+    "notification.push": async (payload) => {
+      const notificationId = requiredString(payload.notificationId, "notificationId");
+      const [notification] = await database
+        .select()
+        .from(notifications)
+        .where(eq(notifications.id, notificationId))
+        .limit(1);
+      if (!notification) return;
+      const devices = await database
+        .select()
+        .from(pushDevices)
+        .where(eq(pushDevices.userId, notification.userId));
+      const provider = getPushProvider(database);
+      for (const device of devices) {
+        await provider.send({
+          notificationId: notification.id,
+          deviceId: device.id,
+          platform: device.platform,
+          token: device.token,
+          title: notification.title,
+          body: notification.body,
+          data: { link: notification.link },
+        });
+      }
     },
 
     "investigations.reconcile": async () => {

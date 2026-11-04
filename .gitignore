@@ -1,6 +1,14 @@
 node_modules/
 .next/
 .next-handoff-build/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/temporary-maven-mirror.init.gradle
+ios/App/Pods/
+ios/App/build/
+ios/DerivedData/
 .env
 .env.local
 coverage/

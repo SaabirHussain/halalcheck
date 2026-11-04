@@ -67,7 +67,9 @@ export function LeafletMap({
   const mapCenter = center ?? fallbackCenter;
 
   return (
-    <div className={`min-h-48 overflow-hidden rounded-card ${className}`}>
+    <div
+      className={`relative z-0 isolate min-h-48 overflow-hidden rounded-card ${className}`}
+    >
       <MapContainer
         center={mapCenter}
         className="h-full min-h-48 w-full"

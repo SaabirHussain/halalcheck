@@ -4,6 +4,8 @@ import Link from "next/link";
 import { LocateFixed, MapPin, Search, SlidersHorizontal } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
+import { Geolocation } from "@capacitor/geolocation";
+import { isNativeApp } from "@/lib/native/platform";
 import { MapLoader } from "./MapLoader";
 import { FiltersPanel } from "./FiltersPanel";
 import { PlaceCard, type DiscoveryPlace } from "./PlaceCard";
@@ -100,8 +102,41 @@ export function DiscoveryExplorer({
     navigate(defaultDiscoveryFilters);
   }
 
-  function requestLocation() {
+  async function requestLocation() {
     setLocationMessage("");
+    const updateLocation = (latitude: number, longitude: number) => {
+      navigate({
+        ...filters,
+        lat: Number(latitude.toFixed(6)),
+        lng: Number(longitude.toFixed(6)),
+        area: "Near you",
+      });
+      setLocationMessage("");
+    };
+    if (isNativeApp()) {
+      try {
+        const permission = await Geolocation.requestPermissions();
+        if (
+          permission.location !== "granted" &&
+          permission.coarseLocation !== "granted"
+        ) {
+          setLocationMessage(
+            "Location access was denied. Enter a city or address to search nearby.",
+          );
+          return;
+        }
+        const { coords } = await Geolocation.getCurrentPosition({
+          timeout: 10_000,
+          maximumAge: 60_000,
+        });
+        updateLocation(coords.latitude, coords.longitude);
+      } catch {
+        setLocationMessage(
+          "We couldn’t determine your location. Enter a city or address to search nearby.",
+        );
+      }
+      return;
+    }
     if (!navigator.geolocation) {
       setLocationMessage(
         "Location is unavailable in this browser. Enter a city or address instead.",
@@ -111,14 +146,7 @@ export function DiscoveryExplorer({
 
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
-        const nextFilters = {
-          ...filters,
-          lat: Number(coords.latitude.toFixed(6)),
-          lng: Number(coords.longitude.toFixed(6)),
-          area: "Near you",
-        };
-        navigate(nextFilters);
-        setLocationMessage("");
+        updateLocation(coords.latitude, coords.longitude);
       },
       (error) => {
         const message =

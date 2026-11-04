@@ -33,6 +33,8 @@ import {
   suppressions,
   emailOutbox,
   notifications,
+  notificationPushes,
+  pushDevices,
   outreachSettings,
   corrections,
   jobRuns,
@@ -75,6 +77,8 @@ import {
   validateFetchUrl,
 } from "@/lib/providers/fetcher";
 import { verifyMailgunSignature } from "@/lib/providers/email/mailgun";
+import { DemoPushProvider } from "@/lib/providers/push/demo";
+import { handlePushDevicesRequest } from "@/app/api/me/push-devices/route";
 import { InlineJobQueue } from "@/lib/jobs/memory";
 import type { JobQueue } from "@/lib/jobs/types";
 import {
@@ -1670,13 +1674,15 @@ describe("publication notifications and fixture coverage", () => {
     await database
       .insert(branchFollows)
       .values({ userId: follower.id, branchId: branch.id });
+    const { queue, calls } = queueRecorder();
     expect(
-      await notifyFollowers({ type: "worker" }, revision!.id, database),
+      await notifyFollowers({ type: "worker" }, revision!.id, queue, database),
     ).toBe(1);
     expect(
-      await notifyFollowers({ type: "worker" }, revision!.id, database),
+      await notifyFollowers({ type: "worker" }, revision!.id, queue, database),
     ).toBe(0);
     expect(await database.select().from(notifications)).toHaveLength(1);
+    expect(calls.filter((call) => call.name === "notification.push")).toHaveLength(1);
   });
 
   it("records off-question clarification claims and flags conflicting website evidence", async () => {
@@ -2108,5 +2114,101 @@ describe("publication notifications and fixture coverage", () => {
       .where(eq(investigations.id, investigation.id));
     expect(updated!.budgetFetchesUsed).toBeLessThanOrEqual(8);
     expect(updated!.budgetFetchesUsed).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("native push registration and delivery", () => {
+  it("rejects anonymous device registration", async () => {
+    const response = await handlePushDevicesRequest(
+      new Request("http://localhost/api/me/push-devices", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ platform: "android", token: "demo-token" }),
+      }),
+      null,
+      database,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("upserts tokens idempotently and transfers them to the current user", async () => {
+    const firstUser = await createUser("user", "push-first@example.test");
+    const secondUser = await createUser("user", "push-second@example.test");
+    const register = (userId: string, platform: "ios" | "android") =>
+      handlePushDevicesRequest(
+        new Request("http://localhost/api/me/push-devices", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ platform, token: "shared-demo-token" }),
+        }),
+        { id: userId },
+        database,
+      );
+
+    const first = await register(firstUser.id, "android");
+    const repeated = await register(firstUser.id, "android");
+    expect(first.status).toBe(200);
+    expect(repeated.status).toBe(200);
+    expect(await database.select().from(pushDevices)).toHaveLength(1);
+
+    const transferred = await register(secondUser.id, "ios");
+    expect(transferred.status).toBe(200);
+    const [device] = await database.select().from(pushDevices);
+    expect(device!.userId).toBe(secondUser.id);
+    expect(device!.platform).toBe("ios");
+    expect(await database.select().from(pushDevices)).toHaveLength(1);
+  });
+
+  it("records one demo delivery per device when a push job is retried", async () => {
+    process.env.PUSH_PROVIDER = "demo";
+    const user = await createUser();
+    const { branch } = await createBranch();
+    const [notification] = await database
+      .insert(notifications)
+      .values({
+        userId: user.id,
+        type: "findings_published",
+        branchId: branch.id,
+        title: "Research findings published",
+        body: "New reviewed findings.",
+        link: `/places/${branch.id}`,
+        dedupeKey: "push-retry-test",
+      })
+      .returning();
+    const devices = await database
+      .insert(pushDevices)
+      .values([
+        { userId: user.id, platform: "android", token: "demo-device-one" },
+        { userId: user.id, platform: "ios", token: "demo-device-two" },
+      ])
+      .returning();
+    const handlers = buildJobHandlers(database, queueRecorder().queue);
+    const pushJob = handlers["notification.push"]!;
+    const payload = { notificationId: notification!.id };
+    const context = { jobId: "push-test", attempt: 1 };
+    await pushJob(payload, context);
+    await pushJob(payload, context);
+    expect(await database.select().from(notificationPushes)).toHaveLength(2);
+    expect(
+      (await database.select().from(notificationPushes)).map(
+        (delivery) => delivery.status,
+      ),
+    ).toEqual(["captured", "captured"]);
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      await new DemoPushProvider(database).send({
+        notificationId: notification!.id,
+        deviceId: devices[0]!.id,
+        platform: "android",
+        token: "demo-device-one",
+        title: "Research findings published",
+        body: "New reviewed findings.",
+        data: { link: `/places/${branch.id}` },
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });

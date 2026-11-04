@@ -1,3 +1,66 @@
+# Mobile app (Capacitor)
+
+The native iOS and Android projects are thin shells around the existing Next.js
+server; this application uses server rendering, server actions, and database
+sessions and therefore is not a static export. `capacitor.config.ts` reads
+`CAP_SERVER_URL` when Capacitor sync runs. It defaults to
+`http://10.0.2.2:3000` for the Android emulator to reach the host machine.
+Use an HTTPS URL for a hosted environment. Capacitor's `server.cleartext` is
+enabled only when this URL uses HTTP; on Android, Capacitor sync generates the
+corresponding application-level cleartext setting rather than requiring a
+manual manifest flag. `server.errorPath` points to the bundled
+`mobile/www/offline.html`; Retry opens the configured server URL.
+
+Install the matching Android SDK platform/build tools and JDK 21 or newer,
+then run:
+
+```sh
+npm install
+cp .env.example .env
+# Set DATABASE_URL and other local values in .env.
+npm run db:migrate
+npm run db:seed
+npm run dev
+npm run worker
+npm run cap:sync
+npm run android:debug
+```
+
+The debug APK is written to
+`android/app/build/outputs/apk/debug/app-debug.apk`. `android:debug` syncs the
+native project before running Gradle. Use `CAP_SERVER_URL` when syncing against
+a different server, for example:
+
+```sh
+CAP_SERVER_URL=https://halalcheck.example npm run cap:sync
+```
+
+On a Mac with Xcode installed, run `npx cap sync ios` and open
+`ios/App/App.xcodeproj` in Xcode to build and sign the iOS app. iOS builds and
+signing cannot be completed on Linux. Store release requires a hosted HTTPS
+server and Apple/Google developer accounts; neither release nor account setup
+is performed by this project workflow.
+
+The app uses native location permission/geolocation, system browser handling
+for external links, Android hardware-back navigation, status-bar and splash
+handling, and push-device registration. Apple App Store Review Guideline 4.2
+may reject apps that merely repackage a website; these native capabilities are
+intended to add functionality beyond a plain wrapper. Production push delivery
+is not implemented; review the current guideline before submission.
+
+Push delivery is demo-only by default (`PUSH_PROVIDER=demo`): it records
+deliveries locally and makes no network calls. `PUSH_PROVIDER=fcm-apns` is an
+unconfigured stub and throws `not configured`; it does not send. A future
+implementation would need a Firebase service-account credential for FCM and an
+Apple APNs authentication key (`.p8`), Key ID, Team ID, and the app's bundle
+identifier. Consult the official
+[Firebase Cloud Messaging documentation](https://firebase.google.com/docs/cloud-messaging)
+and [Apple APNs documentation](https://developer.apple.com/documentation/usernotifications/setting_up_a_remote_notification_server).
+The internal push message carries a same-origin app path as `data.link`; native
+tap handling ignores links that are not root-relative or that resolve off-origin.
+Do not put production credentials in this repository or in demo configuration.
+Android push registration may fail until a local `google-services.json` is
+configured; that failure is swallowed in the app.
 # HalalCheck
 
 HalalCheck is a community research directory. Evidence is reviewed before it

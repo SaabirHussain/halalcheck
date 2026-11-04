@@ -1,10 +1,11 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Fraunces, Inter } from "next/font/google";
 import { SiteFooter } from "@/components/layout/SiteFooter";
 import { SiteHeader } from "@/components/layout/SiteHeader";
 import { MobileTabBar } from "@/components/layout/MobileTabBar";
 import { DemoBanner } from "@/components/layout/DemoBanner";
 import { OfflineBanner } from "@/components/layout/OfflineBanner";
+import { NativeShell } from "@/components/layout/NativeShell";
 import { getCurrentUser } from "@/lib/auth/sessions";
 import { db } from "@/db";
 import { notifications } from "@/db/schema";
@@ -28,6 +29,11 @@ export const metadata: Metadata = {
   description: "Community research directory for halal food businesses.",
 };
 
+export const viewport: Viewport = {
+  themeColor: "#faf6ef",
+  viewportFit: "cover",
+};
+
 export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
@@ -44,6 +50,7 @@ export default async function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} ${fraunces.variable}`}>
       <body className="min-h-screen bg-background font-sans text-ink">
+        <NativeShell userId={user?.id ?? null} />
         <SiteHeader user={user} unreadCount={unread?.value ?? 0} />
         <OfflineBanner />
         <DemoBanner />
