@@ -1,0 +1,2 @@
+import { correctionAction } from "@/app/actions";
+export default async function ReportPage({params}:{params:Promise<{id:string}>}){const {id}=await params;return <main className="form-card"><h1>Suggest a correction</h1><form action={correctionAction}><input type="hidden" name="branchId" value={id}/><label>What should we review?</label><textarea name="body" minLength={10} required/><label>Optional source URL</label><input name="url" type="url"/><button className="button">Submit for review</button></form></main>}

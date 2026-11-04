@@ -1,0 +1,2 @@
+import {signUpAction} from "@/app/actions";
+export default function SignUp(){return <main className="form-card"><h1>Create an account</h1><form action={signUpAction}><label htmlFor="displayName">Name</label><input id="displayName" name="displayName" required/><label htmlFor="email">Email</label><input id="email" type="email" name="email" required/><label htmlFor="password">Password (12 characters minimum)</label><input id="password" type="password" name="password" minLength={12} required/><button className="button">Create account</button></form></main>}

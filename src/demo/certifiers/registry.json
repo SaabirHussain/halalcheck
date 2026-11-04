@@ -1,0 +1,14 @@
+[
+  {
+    "name": "Demo Halal Certification Council",
+    "website": "https://dhcc.demo.halalcheck.test",
+    "registryUrl": "https://dhcc.demo.halalcheck.test/registry",
+    "isDemo": true
+  },
+  {
+    "name": "Community Food Assurance Board",
+    "website": "https://cfab.demo.halalcheck.test",
+    "registryUrl": "https://cfab.demo.halalcheck.test/registry",
+    "isDemo": true
+  }
+]

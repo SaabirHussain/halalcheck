@@ -1,0 +1,1 @@
+ALTER TABLE "evidence_documents" ADD COLUMN "original_filename" text DEFAULT 'evidence' NOT NULL;

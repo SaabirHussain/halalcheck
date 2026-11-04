@@ -6,3 +6,5 @@ coverage/
 storage/
 *.log
 tsconfig.tsbuildinfo
+test-results/
+playwright-report/
