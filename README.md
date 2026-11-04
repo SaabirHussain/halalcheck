@@ -67,3 +67,240 @@ URL and attribution are public settings.
 
 Phone outreach is an interface only and intentionally not implemented.
 Research and evidence summaries are not religious rulings.
+
+## Start the application
+
+From the repository root, start PostgreSQL, install dependencies, and initialize
+the local demo database:
+
+```sh
+cp .env.example .env
+docker compose up -d db
+npm ci
+npm run db:reset
+npm run db:seed
+```
+
+Run the web application and the durable worker in separate terminals:
+
+```sh
+npm run dev
+```
+
+```sh
+npm run worker
+```
+
+Open <http://localhost:3000>. The worker consumes jobs and owns recurring
+schedules; keep it running for queue-backed research and outreach. The app
+defaults to fictional demo data and captured email.
+
+## End-to-end demo
+
+1. Sign in as `user@demo.halalcheck.test` and open Cedar Grill.
+2. Request research and follow the investigation.
+3. Sign in as `admin@demo.halalcheck.test`; approve the initial draft and its
+   contact endpoint in the outreach queue.
+4. Open the Cedar Grill investigation and use the reply simulator with
+   **All our meat is halal.** The simulator uses an internal provider and does
+   not send or receive an external email.
+5. Review and approve the targeted follow-up draft, then simulate the
+   clarification preset.
+6. Review the proposed findings, confirm any material changes, and publish.
+7. Verify the public branch page and the user's in-app notification.
+
+## Available scripts
+
+| Script                | Purpose                                               |
+| --------------------- | ----------------------------------------------------- |
+| `npm run dev`         | Start the Next.js development server.                 |
+| `npm run build`       | Build the production application.                     |
+| `npm run start`       | Serve a production build.                             |
+| `npm run worker`      | Start the pg-boss queue worker and schedules.         |
+| `npm run lint`        | Run ESLint.                                           |
+| `npm run typecheck`   | Run TypeScript without emitting files.                |
+| `npm test`            | Run Vitest unit and PostgreSQL integration tests.     |
+| `npm run e2e`         | Run Playwright end-to-end tests.                      |
+| `npm run db:generate` | Generate Drizzle SQL migrations.                      |
+| `npm run db:migrate`  | Apply migrations to `DATABASE_URL`.                   |
+| `npm run db:seed`     | Seed fictional demo data (`DEMO_MODE=true` required). |
+| `npm run db:reset`    | Destructively reset the local demo database.          |
+
+## Provider configuration
+
+Keep all credentials server-side. `.env.example` is the authoritative list of
+supported variable names; do not add public prefixes to secrets.
+
+### Places search
+
+The default `PLACES_PROVIDER=demo` uses fixtures. For Google Places, set
+`PLACES_PROVIDER=google` and `GOOGLE_PLACES_API_KEY` to a restricted server-side
+API key with only the required Places API access. Monitor quotas and billing
+before enabling it; demo mode never calls paid APIs.
+
+### Geocoding
+
+The default `GEOCODER_PROVIDER=demo` uses local fixtures. To use Nominatim, set
+`GEOCODER_PROVIDER=nominatim` and identify the application in
+`NOMINATIM_USER_AGENT` with a contactable, truthful user agent. Follow
+Nominatim's usage policy, cache results, and avoid bulk or high-rate requests.
+
+### AI research
+
+The default `AI_PROVIDER=demo` uses deterministic local behavior. To connect an
+OpenAI-compatible endpoint, set `AI_PROVIDER=openai`,
+`AI_BASE_URL`, `AI_API_KEY`, and `AI_MODEL`. Use a server-side key and a trusted
+endpoint; public web text is untrusted input and must not override system
+instructions or access private data.
+
+### Outbound and inbound Mailgun
+
+Email defaults to `EMAIL_PROVIDER=demo`; demo messages are captured and never
+sent. For an explicitly configured Mailgun integration, set `EMAIL_PROVIDER=mailgun`,
+`MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, and, if required by your account,
+`MAILGUN_API_BASE`. Configure `OUTREACH_FROM_ADDRESS`,
+`OUTREACH_REPLY_DOMAIN`, `OUTREACH_DEFAULT_TIMEZONE`,
+`OUTREACH_BUSINESS_HOURS`, and `OUTREACH_BUSINESS_DAYS` for sender identity,
+reply routing, and permitted send windows. Real sends require the separate
+opt-in `OUTREACH_ALLOW_REAL_SEND=true`; keep it false in local development and
+tests.
+
+Configure Mailgun inbound routing to the deployment's
+`/api/webhooks/mailgun/inbound` URL. Set `MAILGUN_WEBHOOK_SIGNING_KEY` to the
+signing key from Mailgun and configure delivery events to
+`/api/webhooks/mailgun/events`. The application validates signatures and
+deduplicates provider events. Do not expose webhook keys in logs or client
+bundles.
+
+### Notifications
+
+In-app notifications are stored in PostgreSQL and require no provider
+configuration. Users can control email notification preferences in account
+settings. In demo mode, email is captured in the outbox; notifications do not
+cause a real send unless the Mailgun provider and explicit send opt-in are both
+configured.
+
+### Evidence storage
+
+Uploads use local filesystem storage. Set `STORAGE_DIR` to a private,
+non-publicly-served directory with appropriate ownership and backups.
+`MAX_UPLOAD_BYTES` sets the upload byte limit; correction attachments accept
+PDF, PNG, JPEG, and WebP up to 5 MiB. Raw evidence and private correspondence
+are not public branch-page assets.
+
+### Map tiles
+
+`NEXT_PUBLIC_MAP_TILE_URL` configures the Leaflet tile URL template and
+`NEXT_PUBLIC_MAP_ATTRIBUTION` supplies the visible attribution. The defaults
+use OpenStreetMap's public tile service; follow its tile usage policy. These
+values are public and are embedded in the client.
+
+### Other environment settings
+
+| Variable                   | Purpose                                                    |
+| -------------------------- | ---------------------------------------------------------- |
+| `DATABASE_URL`             | Application PostgreSQL connection.                         |
+| `TEST_DATABASE_URL`        | Isolated PostgreSQL database used by integration tests.    |
+| `APP_URL`                  | Canonical application URL for links and callbacks.         |
+| `DEMO_MODE`                | Enables fictional demo fixtures and demo-only behavior.    |
+| `QUEUE_DRIVER`             | Queue adapter selection (`pg-boss` in normal local setup). |
+| `REFRESH_AFTER_DAYS`       | Age threshold for considering published research stale.    |
+| `CERT_EXPIRY_WARNING_DAYS` | Certificate expiry warning window.                         |
+
+## Worker and queue
+
+The worker registers these jobs in `src/worker/handlers.ts`:
+
+- `investigation.public_research` — fetch and review public research.
+- `investigation.prepare_outreach` — prepare an approval-ready message draft.
+- `investigation.evidence_review` — turn reviewed claims into a proposal.
+- `outreach.send` — send or capture an approved message.
+- `outreach.no_response_check` — schedule an eligible follow-up.
+- `message.parse` — parse an inbound business reply.
+- `notify.followers` — deliver in-app notifications to followers.
+- `investigations.reconcile` — resume or reconcile active investigations.
+- `refresh.scan` — find stale or expiring public research.
+
+- `investigations.reconcile` runs every two minutes.
+- `refresh.scan` runs daily at 03:00 UTC.
+- pg-boss jobs use a retry limit of 3 with backoff enabled. Failed exhausted
+  jobs are recorded for administrator review and can be retried from the admin
+  interface.
+- The queue is durable; keep PostgreSQL and the worker available. Tests use an
+  inline queue or isolated test database as appropriate.
+
+## Security and privacy notes
+
+- Sessions use opaque, database-backed tokens stored as hashes; session cookies
+  are HTTP-only and scoped by the application.
+- Public URL fetching validates destinations and rejects private or otherwise
+  disallowed IP ranges to reduce SSRF risk. Configure only trusted providers.
+- Login and sensitive inbound operations are rate-limited; Mailgun signatures
+  are verified and webhook events are deduplicated.
+- Correction uploads enforce server-side size and file-type checks; do not
+  serve private storage directly from a public static directory.
+- Business email replies and raw source text are private evidence. Public pages
+  expose reviewed summaries, approved excerpts, and evidence categories, not
+  private correspondence or raw attachment contents.
+- Admin server actions verify the administrator role, and domain services
+  enforce actor authorization and audit sensitive changes.
+- Keep provider credentials out of source control, client code, screenshots,
+  and logs. Never enable real sends, paid APIs, or public deployment for a demo
+  verification run.
+
+## Implemented, simulated, and limited
+
+### Implemented
+
+Public branch discovery and evidence summaries, account sessions, research
+requests and follows, in-app notifications, admin review workflows, audit
+events, correction intake, durable jobs, and provider adapters are implemented.
+
+### Simulated in demo mode
+
+Businesses, locations, research fixtures, inbound reply presets, and outbound
+email are fictional. Demo email is captured only. The simulator routes replies
+through the same inbound parsing workflow without contacting an external
+mailbox. Demo providers do not call paid services.
+
+### Limitations & not implemented
+
+Phone outreach, real-world business verification guarantees, religious rulings,
+and a production moderation/legal process are not provided. Map tiles and
+external providers depend on third-party availability and terms. Production
+deployment, operational monitoring, retention policies, and provider-specific
+compliance review must be completed separately.
+
+## Test overview
+
+`npm run typecheck` checks strict TypeScript. `npm run lint` runs ESLint.
+`npm test` includes PostgreSQL-backed integration coverage for requests,
+authorization, evidence privacy, outreach and inbound parsing, refresh,
+publication, notifications, and failure handling; it requires
+`TEST_DATABASE_URL` to point to the isolated `halalcheck_test` database.
+`npm run e2e` exercises the browser demo workflow and screenshot/overflow
+coverage and requires the local app, demo database, and (for the queued path)
+worker to be running. Never point tests or reset scripts at production data.
+
+## Troubleshooting
+
+- If PostgreSQL is unavailable, run `docker compose up -d db` and verify the
+  local `DATABASE_URL` and `TEST_DATABASE_URL`.
+- If queue-backed work remains pending, start `npm run worker` in a separate
+  terminal and inspect the recorded admin job status.
+- Next.js development and build processes must not share the same `.next`
+  output directory. Stop the dev server before a normal build, or use an
+  isolated directory:
+
+  ```sh
+  HALALCHECK_DIST_DIR=.next-handoff-build npm run build
+  ```
+
+- If a previous process left stale `.next` artifacts, stop that process before
+  removing the local build output and restarting `npm run dev`. Do not delete
+  output used by a running server.
+- If map tiles do not load, check `NEXT_PUBLIC_MAP_TILE_URL`,
+  `NEXT_PUBLIC_MAP_ATTRIBUTION`, network access, and the tile provider's usage
+  policy.
+- If uploads fail, check `STORAGE_DIR` permissions and ensure the file is one
+  of the supported formats and within `MAX_UPLOAD_BYTES`.

@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   branchFollows,
@@ -130,4 +130,18 @@ export async function markNotificationRead(
     )
     .returning({ id: notifications.id });
   if (!row) throw new Error("Notification not found.");
+}
+
+export async function markAllNotificationsRead(
+  actor: Actor,
+  database: Database = defaultDb,
+) {
+  if (actor.type !== "user" && actor.type !== "admin")
+    throw new Error("Authenticated user required.");
+  await database
+    .update(notifications)
+    .set({ readAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(eq(notifications.userId, actor.userId), isNull(notifications.readAt)),
+    );
 }

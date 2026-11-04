@@ -11,7 +11,7 @@ export const demoScenarios = [
     key: "saffron",
     business: "Saffron House",
     category: "restaurant",
-    status: "awaiting_business_response",
+    status: "awaiting_outreach_approval",
     cuisine: "Persian",
     address: "22 Demo Market Road",
   },

@@ -42,6 +42,9 @@ export async function submitCorrection(
   if (!rate.allowed)
     throw new Error("Correction submission rate limit exceeded.");
   const parsed = correctionSchema.parse(input);
+  if (input.file && input.file.size > 5_242_880) {
+    throw new Error("Evidence files must be no larger than 5 MB.");
+  }
   const [branch] = await database
     .select({ id: branches.id })
     .from(branches)

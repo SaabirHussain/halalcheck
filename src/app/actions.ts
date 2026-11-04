@@ -1,6 +1,7 @@
 "use server";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
+import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { authenticateUser } from "@/lib/auth/service";
 import { getCurrentUser } from "@/lib/auth/sessions";
@@ -16,6 +17,11 @@ import { registerUser } from "@/lib/auth/service";
 import { followBranch, toggleFavorite } from "@/lib/domain/corrections";
 import { revokeCurrentSession } from "@/lib/auth/sessions";
 import type { Actor } from "@/lib/domain/actor";
+import { updateEmailNotifications } from "@/lib/domain/account";
+import {
+  markAllNotificationsRead,
+  markNotificationRead,
+} from "@/lib/domain/notifications";
 
 export type PlaceActionState = {
   ok?: boolean;
@@ -23,6 +29,11 @@ export type PlaceActionState = {
   message?: string;
   following?: boolean;
   favorited?: boolean;
+};
+
+export type FormActionState = {
+  error?: string;
+  success?: string;
 };
 
 async function requestIp() {
@@ -40,10 +51,15 @@ function toActor(
   return { type: user.role === "admin" ? "admin" : "user", userId: user.id };
 }
 
-export async function signInAction(form: FormData) {
-  const next = String(form.get("next") ?? "/");
-  const redirectTo =
-    next.startsWith("/") && !next.startsWith("//") ? next : "/";
+function safeNext(value: FormDataEntryValue | null) {
+  const next = String(value ?? "/");
+  return next.startsWith("/") && !next.startsWith("//") ? next : "/";
+}
+
+export async function signInAction(
+  _previous: FormActionState,
+  form: FormData,
+): Promise<FormActionState> {
   try {
     await authenticateUser(
       String(form.get("email") ?? ""),
@@ -52,9 +68,9 @@ export async function signInAction(form: FormData) {
       db,
     );
   } catch {
-    redirect(`/sign-in?error=1&next=${encodeURIComponent(redirectTo)}`);
+    return { error: "Invalid email or password." };
   }
-  redirect(redirectTo);
+  redirect(safeNext(form.get("next")));
 }
 
 export async function requestResearchAction(form: FormData) {
@@ -195,21 +211,45 @@ export async function simulateReplyAction(form: FormData) {
   redirect(`/admin/investigations/${investigationId}`);
 }
 
-export async function correctionAction(form: FormData) {
+export async function correctionAction(
+  _previous: FormActionState,
+  form: FormData,
+): Promise<FormActionState> {
   const user = await getCurrentUser();
-  if (!user) redirect("/sign-in");
+  if (!user) {
+    redirect(
+      `/sign-in?next=${encodeURIComponent(
+        `/places/${String(form.get("branchId") ?? "")}/report`,
+      )}`,
+    );
+  }
   const branchId = String(form.get("branchId") ?? "");
   const file = form.get("file");
-  await submitCorrection(toActor(user), branchId, {
-    body: String(form.get("body") ?? ""),
-    url: String(form.get("url") ?? "") || null,
-    isOwnerSubmission: form.get("isOwnerSubmission") === "on",
-    file: file instanceof File && file.size > 0 ? file : null,
-  });
-  redirect(`/places/${branchId}`);
+  try {
+    await submitCorrection(toActor(user), branchId, {
+      body: String(form.get("body") ?? ""),
+      url: String(form.get("url") ?? "") || null,
+      isOwnerSubmission: form.get("isOwnerSubmission") === "on",
+      file: file instanceof File && file.size > 0 ? file : null,
+    });
+    return {
+      success:
+        "Thank you. Your correction is in the review queue; it will not change public findings until reviewed.",
+    };
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "We couldn’t submit your correction. Please try again.",
+    };
+  }
 }
 
-export async function signUpAction(form: FormData) {
+export async function signUpAction(
+  _previous: FormActionState,
+  form: FormData,
+): Promise<FormActionState> {
   try {
     await registerUser(
       String(form.get("email") ?? ""),
@@ -219,7 +259,41 @@ export async function signUpAction(form: FormData) {
       db,
     );
   } catch {
-    redirect("/sign-up?error=1");
+    return {
+      error: "Unable to create account. Check the details and try again.",
+    };
   }
-  redirect("/");
+  redirect(safeNext(form.get("next")));
+}
+
+export async function markNotificationReadAction(form: FormData) {
+  const user = await getCurrentUser();
+  if (!user) redirect("/sign-in?next=%2Fme%2Fnotifications");
+  await markNotificationRead(
+    toActor(user),
+    String(form.get("notificationId") ?? ""),
+    db,
+  );
+  revalidatePath("/me/notifications");
+  revalidatePath("/");
+}
+
+export async function markAllNotificationsReadAction() {
+  const user = await getCurrentUser();
+  if (!user) redirect("/sign-in?next=%2Fme%2Fnotifications");
+  await markAllNotificationsRead(toActor(user), db);
+  revalidatePath("/me/notifications");
+  revalidatePath("/");
+}
+
+export async function emailNotificationsAction(form: FormData) {
+  const user = await getCurrentUser();
+  if (!user) redirect("/sign-in?next=%2Fme%2Fsettings");
+  await updateEmailNotifications(
+    toActor(user),
+    form.get("emailNotifications") === "on",
+    db,
+  );
+  revalidatePath("/me/settings");
+  revalidatePath("/");
 }

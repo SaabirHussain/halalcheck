@@ -6,11 +6,11 @@ import {
   branches,
   branchFollows,
   businesses,
+  auditEvents,
   certificates,
   certifiers,
   claims,
   contactEndpoints,
-  emailOutbox,
   externalPlaceIds,
   investigationSubscriptions,
   investigations,
@@ -59,7 +59,13 @@ const scenarioByKey = new Map<string, (typeof demoScenarios)[number]>(
 const adminId = ids.user("admin");
 const userId = ids.user("user");
 const user2Id = ids.user("user2");
-const defaultDate = "2025-01-15";
+const seedTime = new Date();
+const daysAgo = (days: number) =>
+  new Date(seedTime.getTime() - days * 24 * 60 * 60 * 1000);
+const daysFromNow = (days: number) =>
+  new Date(seedTime.getTime() + days * 24 * 60 * 60 * 1000);
+const dateOnly = (date: Date) => date.toISOString().slice(0, 10);
+const defaultDate = dateOnly(daysAgo(28));
 
 async function seedSource(
   key: string,
@@ -89,7 +95,7 @@ async function seedSource(
       kind: values.kind,
       title: values.title,
       url: values.url ?? null,
-      retrievedAt: values.retrievedAt ?? new Date("2025-01-15T12:00:00Z"),
+      retrievedAt: values.retrievedAt ?? daysAgo(28),
       contentHash: createHash("sha256").update(values.rawText).digest("hex"),
       rawText: values.rawText,
       isPublic: values.public ?? false,
@@ -186,8 +192,8 @@ async function seedRevision(
       revisionNumber,
       proposedUpdateId: proposalId,
       publishedBy: adminId,
-      publishedAt: new Date(
-        `2025-0${Math.min(revisionNumber + 1, 9)}-15T12:00:00Z`,
+      publishedAt: daysAgo(
+        key === "bayview-r1" ? 92 : revisionNumber > 1 ? 30 : 58,
       ),
       changeSummary:
         revisionNumber > 1
@@ -220,6 +226,7 @@ async function seedMessage(
   subject: string,
   bodyText: string,
   questions: string[] = [],
+  timing: { sentDaysAgo?: number; receivedDaysAgo?: number } = {},
 ) {
   const messageId = ids.message(key);
   await db
@@ -238,9 +245,11 @@ async function seedMessage(
       messageIdHeader:
         direction === "outbound" ? `<${key}@demo.halalcheck.test>` : null,
       sentAt:
-        direction === "outbound" ? new Date("2025-01-16T15:00:00Z") : null,
+        direction === "outbound" && ["sent", "captured"].includes(status)
+          ? daysAgo(timing.sentDaysAgo ?? 27)
+          : null,
       receivedAt:
-        direction === "inbound" ? new Date("2025-01-18T15:00:00Z") : null,
+        direction === "inbound" ? daysAgo(timing.receivedDaysAgo ?? 26) : null,
     })
     .onConflictDoNothing();
   return messageId;
@@ -366,14 +375,34 @@ export async function seedDemo() {
               : scenario.key === "kebab"
                 ? "https://kebab.demo.halalcheck.test/"
                 : null,
-        imageUrl:
-          scenario.key === "kebab"
-            ? "/images/halalcheck-grill.svg"
-            : scenario.category === "butcher"
-              ? "/images/halalcheck-butcher.svg"
-              : "/images/halalcheck-market.svg",
+        imageUrl: {
+          cedar: "/images/grill.svg",
+          saffron: "/images/curry.svg",
+          olive: "/images/grill.svg",
+          harbor: "/images/burger.svg",
+          "zaytoon-downtown": "/images/shawarma.svg",
+          "zaytoon-eastside": "/images/shawarma.svg",
+          kebab: "/images/shawarma.svg",
+          alnoor: "/images/butcher.svg",
+          spice: "/images/grocery.svg",
+          bayview: "/images/curry.svg",
+        }[scenario.key],
         timezone: "America/Toronto",
         researchStatus: scenario.status,
+        lastReviewedAt: [
+          "findings_published",
+          "needs_refresh",
+          "unable_to_confirm",
+        ].includes(scenario.status)
+          ? daysAgo(28)
+          : null,
+        lastConfirmedAt: [
+          "findings_published",
+          "needs_refresh",
+          "unable_to_confirm",
+        ].includes(scenario.status)
+          ? daysAgo(28)
+          : null,
         isDemo: true,
       })
       .onConflictDoUpdate({
@@ -382,6 +411,20 @@ export async function seedDemo() {
           researchStatus: scenario.status,
           isDemo: true,
           address: scenario.address,
+          lastReviewedAt: [
+            "findings_published",
+            "needs_refresh",
+            "unable_to_confirm",
+          ].includes(scenario.status)
+            ? daysAgo(28)
+            : null,
+          lastConfirmedAt: [
+            "findings_published",
+            "needs_refresh",
+            "unable_to_confirm",
+          ].includes(scenario.status)
+            ? daysAgo(28)
+            : null,
           updatedAt: new Date(),
         },
       });
@@ -402,6 +445,7 @@ export async function seedDemo() {
     const investigationId = ids.investigation(scenario.key);
     investigationIds.set(scenario.key, investigationId);
     const active = [
+      "awaiting_outreach_approval",
       "awaiting_business_response",
       "reviewing_evidence",
     ].includes(scenario.status);
@@ -422,6 +466,10 @@ export async function seedDemo() {
         isActive: active,
         outcome: active ? null : scenario.status,
         createdBy: userId,
+        stageDetail:
+          scenario.key === "saffron"
+            ? "Public research completed; initial outreach draft awaits approval."
+            : null,
         budgetFetchesUsed: 1,
         budgetAiCallsUsed: 1,
       })
@@ -465,7 +513,11 @@ export async function seedDemo() {
       },
     );
   }
-  const makeReply = async (key: string, body: string) => {
+  const makeReply = async (
+    key: string,
+    body: string,
+    retrievedAt = daysAgo(26),
+  ) => {
     const branchId = branchIds.get(key)!;
     const investigationId = investigationIds.get(key)!;
     sourcesByKey[`${key}:reply`] = await seedSource(
@@ -477,28 +529,23 @@ export async function seedDemo() {
         title: `${scenarioByKey.get(key)!.business} email response`,
         rawText: body,
         public: false,
-        retrievedAt: new Date("2025-01-18T15:00:00Z"),
+        retrievedAt,
       },
     );
     return sourcesByKey[`${key}:reply`]!;
   };
 
-  const oliveReply = await makeReply(
-    "olive",
-    "Our chicken supplier is Crescent Poultry. Chicken is hand-slaughtered. Certified by Demo Halal Certification Council.",
-  );
-  const harborReply = await makeReply(
-    "harbor",
-    "Chicken is supplied by Harbor Poultry. Beef is not halal. The halal chicken is prepared on a shared grill.",
-  );
-  const zaytoonReply = await makeReply(
-    "zaytoon-downtown",
-    "Chicken is supplied by Crescent Poultry and hand-slaughtered. Beef is supplied by Prairie Beef Co.",
-  );
-  const kebabReply = await makeReply(
-    "kebab",
-    "Our chicken is hand-slaughtered.",
-  );
+  const oliveReplyText =
+    "Our chicken supplier is Crescent Poultry. Chicken is hand-slaughtered. Certified by Demo Halal Certification Council.";
+  const oliveReply = await makeReply("olive", oliveReplyText);
+  const harborReplyText =
+    "Chicken is supplied by Harbor Poultry. Beef is not halal. The halal chicken is prepared on a shared grill.";
+  const harborReply = await makeReply("harbor", harborReplyText);
+  const zaytoonReplyText =
+    "Chicken is supplied by Crescent Poultry and hand-slaughtered. Beef is supplied by Prairie Beef Co.";
+  const zaytoonReply = await makeReply("zaytoon-downtown", zaytoonReplyText);
+  const kebabReplyText = "Our chicken is hand-slaughtered.";
+  const kebabReply = await makeReply("kebab", kebabReplyText);
   const kebabRegistry = await seedSource(
     "kebab:registry",
     branchIds.get("kebab")!,
@@ -514,20 +561,26 @@ export async function seedDemo() {
       public: true,
     },
   );
-  await makeReply(
-    "alnoor",
-    "The current certificate lists beef and lamb products for this branch.",
-  );
+  const alnoorReplyText =
+    "The current certificate lists beef and lamb products for this branch.";
+  const alnoorReply = await makeReply("alnoor", alnoorReplyText);
+  const bayviewReplyText =
+    "Reviewed supplier confirmation: chicken is supplied by Harbor Poultry.";
   const bayviewSource = await makeReply(
     "bayview",
-    "Reviewed supplier confirmation: chicken is supplied by Harbor Poultry.",
+    bayviewReplyText,
+    daysAgo(30),
   );
 
   const acceptedCertifier = ids.certifier("Demo Halal Certification Council");
   const secondaryCertifier = ids.certifier("Community Food Assurance Board");
   const proposalIds = new Map<string, string>();
   for (const scenario of demoScenarios) {
-    if (scenario.key === "cedar" || scenario.key === "zaytoon-eastside")
+    if (
+      scenario.key === "cedar" ||
+      scenario.key === "saffron" ||
+      scenario.key === "zaytoon-eastside"
+    )
       continue;
     const proposalId = ids.proposal(scenario.key);
     proposalIds.set(scenario.key, proposalId);
@@ -558,7 +611,7 @@ export async function seedDemo() {
             ? [
                 {
                   type: "unanswered",
-                  detail: "No business response after two follow-ups.",
+                  detail: "No business response after one follow-up.",
                   claimIds: [],
                 },
               ]
@@ -577,7 +630,7 @@ export async function seedDemo() {
             : [],
         flags,
         reviewedBy: pending ? null : adminId,
-        reviewedAt: pending ? null : new Date("2025-02-01T12:00:00Z"),
+        reviewedAt: pending ? null : daysAgo(25),
       })
       .onConflictDoNothing();
   }
@@ -805,10 +858,8 @@ export async function seedDemo() {
       kind: "certifier_registry",
       title: "Expired demo certificate record",
       url: "https://dhcc.demo.halalcheck.test/registry/al-noor-2023",
-      rawText:
-        "Demo certificate DHCC-2023-041 valid through 2024-12-31 for listed beef and lamb products.",
-      publicExcerpt:
-        "Certificate DHCC-2023-041 was valid through 2024-12-31 for listed beef and lamb products.",
+      rawText: `Demo certificate DHCC-2023-041 valid through ${dateOnly(daysAgo(90))} for listed beef and lamb products.`,
+      publicExcerpt: `Certificate DHCC-2023-041 was valid through ${dateOnly(daysAgo(90))} for listed beef and lamb products.`,
       public: true,
     },
   );
@@ -821,8 +872,8 @@ export async function seedDemo() {
       products: ["beef", "lamb"],
       scopeText: "Beef and lamb products at Al-Noor Butchers, Demo City branch",
       certificateNumber: "DHCC-2023-041",
-      validFrom: "2023-01-01",
-      validUntil: "2024-12-31",
+      validFrom: dateOnly(daysAgo(365)),
+      validUntil: dateOnly(daysAgo(90)),
       coversBranch: true,
       sourceId: alnoorCertificateSource,
       reviewStatus: "accepted",
@@ -835,14 +886,15 @@ export async function seedDemo() {
     proposedUpdateId: proposalIds.get("alnoor")!,
     product: "beef",
     attribute: "certificate",
-    value: "Certificate DHCC-2023-041 reviewed; expired 2024-12-31.",
+    value: `Certificate DHCC-2023-041 reviewed; expired ${dateOnly(daysAgo(90))}.`,
     evidenceCategory: "certification",
     status: "published",
     sourceId: alnoorCertificateSource,
-    excerpt: "valid through 2024-12-31",
+    excerpt: `valid through ${dateOnly(daysAgo(90))}`,
     publishedRevisionId: revisionIds.get("alnoor"),
   });
 
+  const bayviewOldReplyText = "Chicken supplier is North Shore Poultry.";
   const bayviewOldSource = await seedSource(
     "bayview:old-supplier",
     branchIds.get("bayview")!,
@@ -850,8 +902,9 @@ export async function seedDemo() {
     {
       kind: "email_reply",
       title: "Earlier supplier response",
-      rawText: "Chicken supplier is North Shore Poultry.",
+      rawText: bayviewOldReplyText,
       public: false,
+      retrievedAt: daysAgo(95),
     },
   );
   const bayviewOldClaimId = await seedClaim("bayview-chicken-old", {
@@ -864,7 +917,7 @@ export async function seedDemo() {
     evidenceCategory: "restaurant_claim",
     status: "superseded",
     sourceId: bayviewOldSource,
-    excerpt: "Chicken supplier is North Shore Poultry.",
+    excerpt: bayviewOldReplyText,
     publishedRevisionId: ids.revision("bayview-r1"),
   });
   await seedClaim("bayview-chicken-current", {
@@ -891,10 +944,10 @@ export async function seedDemo() {
             attribute: "supplier",
             value: "North Shore Poultry",
             evidenceCategory: "restaurant_claim",
-            confirmedAt: "2024-03-01",
+            confirmedAt: dateOnly(daysAgo(92)),
             source: {
               title: "Earlier supplier response",
-              retrievedAt: "2024-03-01T12:00:00Z",
+              retrievedAt: daysAgo(92).toISOString(),
             },
             publicExcerpt: "Chicken supplier is North Shore Poultry.",
           },
@@ -916,7 +969,7 @@ export async function seedDemo() {
             confirmedAt: defaultDate,
             source: {
               title: "Bayview Shawarma email response",
-              retrievedAt: "2025-01-18T15:00:00Z",
+              retrievedAt: daysAgo(26).toISOString(),
             },
             publicExcerpt: "chicken is supplied by Harbor Poultry.",
           },
@@ -926,34 +979,63 @@ export async function seedDemo() {
     })
     .where(eq(publishedRevisions.id, revisionIds.get("bayview")!));
 
-  for (const [key, certifierId, product, number, validUntil] of [
+  for (const [key, branchKey, certifierId, product, number, validityDays] of [
     [
       "zaytoon-chicken",
+      "zaytoon-downtown",
       acceptedCertifier,
       ["chicken"],
-      "DHCC-2025-004",
-      "2025-12-31",
+      "DHCC-DEMO-004",
+      270,
     ],
     [
       "zaytoon-beef",
+      "zaytoon-downtown",
       secondaryCertifier,
       ["beef"],
-      "CFAB-2025-015",
-      "2025-10-31",
+      "CFAB-DEMO-015",
+      240,
+    ],
+    [
+      "olive-certificate",
+      "olive",
+      acceptedCertifier,
+      ["chicken"],
+      "DHCC-DEMO-OLIVE",
+      240,
+    ],
+    [
+      "harbor-certificate",
+      "harbor",
+      secondaryCertifier,
+      ["chicken"],
+      "CFAB-DEMO-HARBOR",
+      270,
+    ],
+    [
+      "bayview-certificate",
+      "bayview",
+      acceptedCertifier,
+      ["chicken"],
+      "DHCC-DEMO-BAYVIEW",
+      300,
     ],
   ] as const) {
-    const sourceId = zaytoonReply;
+    const sourceId =
+      branchKey === "zaytoon-downtown"
+        ? zaytoonReply
+        : sourcesByKey[`${branchKey}:reply`];
     await db
       .insert(certificates)
       .values({
         id: ids.certificate(key),
-        branchId: branchIds.get("zaytoon-downtown")!,
+        branchId: branchIds.get(branchKey)!,
         certifierId,
         products: [...product],
         scopeText: `${product.join(", ")} coverage at Zaytoon Kitchen Downtown branch`,
         certificateNumber: number,
-        validFrom: "2025-01-01",
-        validUntil,
+        validFrom: dateOnly(daysAgo(90)),
+        validUntil: dateOnly(daysFromNow(validityDays)),
         coversBranch: true,
         sourceId,
         reviewStatus: "accepted",
@@ -1007,37 +1089,139 @@ export async function seedDemo() {
     return threadId;
   };
 
+  const seedReplyConversation = async (
+    key: string,
+    email: string,
+    questions: string[],
+    replies: Array<{
+      sourceId: string;
+      body: string;
+      receivedDaysAgo?: number;
+      followupSentDaysAgo?: number;
+    }>,
+    options: {
+      threadStatus?: "open" | "closed";
+      initialSentDaysAgo?: number;
+    } = {},
+  ) => {
+    const threadId = await createThread(
+      key,
+      key,
+      email,
+      Math.max(0, replies.length - 1),
+      options.threadStatus ?? "closed",
+    );
+    const subject = "A few questions from HalalCheck";
+    await seedMessage(
+      `${key}-initial`,
+      threadId,
+      "outbound",
+      1,
+      "initial",
+      "sent",
+      subject,
+      "We are researching current product sourcing and kitchen practices for this branch. Could you share a few details?",
+      questions,
+      { sentDaysAgo: options.initialSentDaysAgo },
+    );
+    for (const [index, reply] of replies.entries()) {
+      const sequence = index + 1;
+      if (index > 0) {
+        await seedMessage(
+          `${key}-followup-${sequence}`,
+          threadId,
+          "outbound",
+          sequence,
+          "followup",
+          "sent",
+          "A quick follow-up",
+          "Thank you for the earlier details. Could you clarify this update for the branch?",
+          questions,
+          { sentDaysAgo: reply.followupSentDaysAgo },
+        );
+      }
+      const messageId = await seedMessage(
+        `${key}-reply-${sequence}`,
+        threadId,
+        "inbound",
+        sequence,
+        "reply",
+        "received",
+        `Re: ${subject}`,
+        reply.body,
+        [],
+        { receivedDaysAgo: reply.receivedDaysAgo },
+      );
+      await db
+        .update(sources)
+        .set({ messageId })
+        .where(eq(sources.id, reply.sourceId));
+    }
+    return threadId;
+  };
+
+  await seedReplyConversation(
+    "harbor",
+    "info@harbor.demo.halalcheck.test",
+    ["chicken_supplier", "beef_supplier", "shared_grill"],
+    [{ sourceId: harborReply, body: harborReplyText }],
+  );
+  await seedReplyConversation(
+    "zaytoon-downtown",
+    "info@zaytoon.demo.halalcheck.test",
+    ["chicken_supplier", "chicken_slaughter", "beef_supplier"],
+    [{ sourceId: zaytoonReply, body: zaytoonReplyText }],
+  );
+  await seedReplyConversation(
+    "alnoor",
+    "info@alnoor.demo.halalcheck.test",
+    ["certifier", "certificate"],
+    [{ sourceId: alnoorReply, body: alnoorReplyText }],
+  );
+  await seedReplyConversation(
+    "bayview",
+    "info@bayview.demo.halalcheck.test",
+    ["chicken_supplier"],
+    [
+      {
+        sourceId: bayviewOldSource,
+        body: bayviewOldReplyText,
+        receivedDaysAgo: 95,
+      },
+      {
+        sourceId: bayviewSource,
+        body: bayviewReplyText,
+        receivedDaysAgo: 32,
+        followupSentDaysAgo: 35,
+      },
+    ],
+    { initialSentDaysAgo: 97 },
+  );
+  const kebabThread = await seedReplyConversation(
+    "kebab",
+    "info@kebab.demo.halalcheck.test",
+    ["chicken_slaughter", "chicken_supplier"],
+    [{ sourceId: kebabReply, body: kebabReplyText }],
+    { threadStatus: "open" },
+  );
+
   const saffronThread = await createThread(
     "saffron",
     "saffron",
     "info@saffron.demo.halalcheck.test",
     0,
   );
-  const saffronOutbound = await seedMessage(
+  await seedMessage(
     "saffron-outbound",
     saffronThread,
     "outbound",
     1,
     "initial",
-    "captured",
+    "draft",
     "A few questions from HalalCheck",
-    "Hello, we are HalalCheck, a community research directory. Which suppliers provide your meat? Answers may be summarized publicly. Reply STOP to opt out.",
+    "Hello,\n\nI’m an automated research assistant on behalf of HalalCheck, a community research directory. We are reviewing Saffron House (Demo City) and would appreciate a few details:\n\n• Which supplier provides your chicken?\n• Which organization certifies the relevant products, and does coverage include this branch?\n• Can you share a current certificate or supplier documentation?\n\nYour answers may be summarized publicly with their source and date. We will not present unanswered questions as facts. You can opt out at any time by replying STOP.\n\nThank you,\nHalalCheck research team",
     ["chicken_supplier", "certifier", "certificate"],
   );
-  await db
-    .insert(emailOutbox)
-    .values({
-      id: stableId("outbox:saffron"),
-      to: "info@saffron.demo.halalcheck.test",
-      from: "research@demo.halalcheck.test",
-      subject: "A few questions from HalalCheck",
-      bodyText: "Captured demo outreach message. Never transmitted.",
-      headers: { "Reply-To": "reply+demo@demo.halalcheck.test" },
-      purpose: "outreach",
-      status: "captured",
-      relatedMessageId: saffronOutbound,
-    })
-    .onConflictDoNothing();
   const saffronInvestigationId = investigationIds.get("saffron")!;
   for (const followerId of [adminId, userId, user2Id]) {
     await db
@@ -1061,6 +1245,7 @@ export async function seedDemo() {
     "olive",
     "info@olive.demo.halalcheck.test",
     1,
+    "closed",
   );
   await seedMessage(
     "olive-initial",
@@ -1068,7 +1253,7 @@ export async function seedDemo() {
     "outbound",
     1,
     "initial",
-    "captured",
+    "sent",
     "A few questions from HalalCheck",
     "Could you share supplier and certification details?",
     ["chicken_supplier", "certifier"],
@@ -1089,7 +1274,7 @@ export async function seedDemo() {
     "outbound",
     2,
     "followup",
-    "captured",
+    "sent",
     "A quick clarification",
     "Could you identify the chicken supplier and certifying organization?",
     ["chicken_supplier", "certifier"],
@@ -1102,15 +1287,10 @@ export async function seedDemo() {
     "reply",
     "received",
     "Re: A quick clarification",
-    "Our chicken supplier is Crescent Poultry. Chicken is hand-slaughtered. Certified by Demo Halal Certification Council.",
+    oliveReplyText,
   );
   for (const [messageId, title, content] of [
     [oliveVague, "Initial vague business reply", "All our meat is halal."],
-    [
-      oliveClarification,
-      "Clarifying business reply",
-      "Our chicken supplier is Crescent Poultry. Chicken is hand-slaughtered. Certified by Demo Halal Certification Council.",
-    ],
   ] as const) {
     await db
       .insert(sources)
@@ -1120,36 +1300,27 @@ export async function seedDemo() {
         branchId: branchIds.get("olive")!,
         kind: "email_reply",
         title,
-        retrievedAt: new Date("2025-01-18T15:00:00Z"),
+        retrievedAt: daysAgo(26),
         rawText: content,
         isPublic: false,
         messageId,
       })
       .onConflictDoNothing();
   }
+  await db
+    .update(sources)
+    .set({ messageId: oliveClarification })
+    .where(eq(sources.id, oliveReply));
 
-  const kebabThread = await createThread(
-    "kebab",
-    "kebab",
-    "info@kebab.demo.halalcheck.test",
-    0,
-  );
-  await seedMessage(
-    "kebab-outbound",
-    kebabThread,
-    "outbound",
-    1,
-    "initial",
-    "captured",
-    "A few questions from HalalCheck",
-    "Could you clarify your chicken slaughter method and supplier?",
-    ["chicken_slaughter", "chicken_supplier"],
-  );
+  await db
+    .insert(branchFollows)
+    .values({ userId, branchId: branchIds.get("kebab")! })
+    .onConflictDoNothing();
   const spiceThread = await createThread(
     "spice",
     "spice",
     "info@spice.demo.halalcheck.test",
-    2,
+    1,
     "closed",
   );
   await seedMessage(
@@ -1158,7 +1329,7 @@ export async function seedDemo() {
     "outbound",
     1,
     "initial",
-    "captured",
+    "sent",
     "HalalCheck research questions",
     "Could you share supplier and certification information?",
     ["chicken_supplier", "certifier"],
@@ -1169,14 +1340,14 @@ export async function seedDemo() {
     "outbound",
     2,
     "followup",
-    "captured",
+    "sent",
     "Following up on HalalCheck questions",
     "One brief follow-up on suppliers and certificates. Reply STOP to opt out.",
     ["chicken_supplier", "certifier"],
   );
   await db
     .update(outreachThreads)
-    .set({ status: "closed", followupsSent: 2 })
+    .set({ status: "closed", followupsSent: 1 })
     .where(eq(outreachThreads.id, spiceThread));
 
   for (const [scenarioKey, threadId] of [
@@ -1234,6 +1405,101 @@ export async function seedDemo() {
         body: `Reviewed fictional findings for ${scenarioByKey.get(scenarioKey)!.business}.`,
         link: `/places/${branchIds.get(scenarioKey)!}`,
         dedupeKey: `revision:${revisionIds.get(scenarioKey)}`,
+      })
+      .onConflictDoNothing();
+  }
+
+  const auditFixtures: Array<{
+    key: string;
+    actorType: "admin" | "user" | "worker";
+    actorUserId: string | null;
+    action: string;
+    entityType: string;
+    entityId: string;
+    metadata: Record<string, string | number | boolean | null>;
+    createdAt: Date;
+  }> = [
+    ...[...investigationIds.entries()].map(
+      ([scenarioKey, investigationId]) => ({
+        key: `request:${scenarioKey}`,
+        actorType: "user" as const,
+        actorUserId: userId,
+        action: "research_requested",
+        entityType: "investigation",
+        entityId: investigationId,
+        metadata: {
+          branchId: branchIds.get(scenarioKey)!,
+          joinedExisting: false,
+        },
+        createdAt: daysAgo(60),
+      }),
+    ),
+    {
+      key: "saffron:contact-approved",
+      actorType: "admin" as const,
+      actorUserId: adminId,
+      action: "contact_endpoint_approved",
+      entityType: "contact_endpoint",
+      entityId: stableId("endpoint:saffron"),
+      metadata: { status: "approved" },
+      createdAt: daysAgo(11),
+    },
+    {
+      key: "saffron:draft-created",
+      actorType: "worker" as const,
+      actorUserId: null,
+      action: "outreach_draft_created",
+      entityType: "investigation",
+      entityId: saffronInvestigationId,
+      metadata: { questionCount: 3 },
+      createdAt: daysAgo(10),
+    },
+    ...[...revisionIds.entries()].map(([scenarioKey, revisionId]) => ({
+      key: `published:${scenarioKey}`,
+      actorType: "admin" as const,
+      actorUserId: adminId,
+      action: "findings_published",
+      entityType: "published_revision",
+      entityId: revisionId,
+      metadata: {
+        branchId: branchIds.get(scenarioKey)!,
+        revisionNumber: scenarioKey === "bayview" ? 2 : 1,
+      },
+      createdAt: daysAgo(scenarioKey === "bayview" ? 30 : 25),
+    })),
+    {
+      key: "kebab:conflict-detected",
+      actorType: "worker" as const,
+      actorUserId: null,
+      action: "claim_conflict_detected",
+      entityType: "investigation",
+      entityId: investigationIds.get("kebab")!,
+      metadata: { claimCount: 2 },
+      createdAt: daysAgo(24),
+    },
+    {
+      key: "spice:unable-to-confirm",
+      actorType: "admin" as const,
+      actorUserId: adminId,
+      action: "investigation_marked_unable_to_confirm",
+      entityType: "proposed_update",
+      entityId: proposalIds.get("spice")!,
+      metadata: { unansweredQuestionCount: 3 },
+      createdAt: daysAgo(25),
+    },
+  ];
+  for (const event of auditFixtures) {
+    await db
+      .insert(auditEvents)
+      .values({
+        id: stableId(`audit:${event.key}`),
+        actorType: event.actorType,
+        actorUserId: event.actorUserId,
+        action: event.action,
+        entityType: event.entityType,
+        entityId: event.entityId,
+        metadata: event.metadata,
+        createdAt: event.createdAt,
       })
       .onConflictDoNothing();
   }

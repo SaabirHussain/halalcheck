@@ -226,7 +226,6 @@ export function stageQueue(status: string) {
   const names: Record<string, string> = {
     queued: "investigation.public_research",
     checking_public_sources: "investigation.public_research",
-    awaiting_outreach_approval: "investigation.prepare_outreach",
     awaiting_business_response: "outreach.no_response_check",
     reviewing_evidence: "investigation.evidence_review",
   };

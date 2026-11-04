@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, isNotNull } from "drizzle-orm";
-import type { PgBossQueue } from "@/lib/jobs/pg-boss";
-import type { JobHandler } from "@/lib/jobs/types";
+import type { JobHandler, JobQueue } from "@/lib/jobs/types";
 import type { db as defaultDb } from "@/db";
 import {
   branches,
@@ -30,7 +29,7 @@ const workerActor = { type: "worker" } as const;
 
 export function buildJobHandlers(
   database: Database,
-  queue: PgBossQueue,
+  queue: JobQueue,
 ): Record<string, JobHandler<Payload>> {
   return {
     "investigation.public_research": async (payload) => {

@@ -62,7 +62,11 @@ export async function parseInboundReply(
     .limit(1);
   const [replyTarget] = message.inReplyTo
     ? await database
-        .select({ questions: outreachMessages.questions })
+        .select({
+          questions: outreachMessages.questions,
+          kind: outreachMessages.kind,
+          sequence: outreachMessages.sequence,
+        })
         .from(outreachMessages)
         .where(
           and(
@@ -76,7 +80,11 @@ export async function parseInboundReply(
   const [latestOutbound] = replyTarget
     ? [replyTarget]
     : await database
-        .select({ questions: outreachMessages.questions })
+        .select({
+          questions: outreachMessages.questions,
+          kind: outreachMessages.kind,
+          sequence: outreachMessages.sequence,
+        })
         .from(outreachMessages)
         .where(
           and(
@@ -316,7 +324,11 @@ export async function parseInboundReply(
   const stillOpen = openQuestionKeysForClaims(updatedClaims);
   const [settings] = await database.select().from(outreachSettings).limit(1);
   const maxFollowups = settings?.maxFollowups ?? 2;
-  if (stillOpen.length && thread.followupsSent < maxFollowups) {
+  const followupsObservedInThread =
+    replyTarget?.kind === "followup"
+      ? Math.max(thread.followupsSent, replyTarget.sequence - 1)
+      : thread.followupsSent;
+  if (stillOpen.length && followupsObservedInThread < maxFollowups) {
     await createOutreachDraft(actor, thread.investigationId, database, queue, {
       vagueSignals: parsed.vagueSignals,
     });

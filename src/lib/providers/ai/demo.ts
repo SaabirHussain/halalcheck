@@ -89,7 +89,7 @@ export class DemoAIProvider implements AIProvider {
       vagueSignals.push("certified_no_org");
     if (staffDontKnow) vagueSignals.push("staff_dont_know");
     const referral = text.match(
-      /(?:contact|speak to|ask for)\s+([A-Z][A-Za-z .'-]{1,80})(?:\s+at|\s*[,;]\s*|\s+<)([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i,
+      /(?:contact|speak to|ask for)\s+([A-Z][A-Za-z .'-]{1,80})(?:\s+at\s+|\s*[,;]\s*|\s+<)([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i,
     );
     if (referral) vagueSignals.push("referral");
     const answers: ParsedReply["answers"] = [];

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { LocateFixed, MapPin, Search, SlidersHorizontal } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { MapLoader } from "./MapLoader";
@@ -184,17 +185,20 @@ export function DiscoveryExplorer({
           </h1>
         </div>
         <span className="inline-flex min-h-10 items-center gap-2 rounded-full border border-border bg-surface px-4 text-sm font-medium">
-          <span aria-hidden="true">⌖</span>
+          <MapPin aria-hidden="true" size={17} />
           {filters.area || "Demo City"}
         </span>
       </div>
 
-      <form className="flex flex-col gap-3 sm:flex-row" onSubmit={submitSearch}>
+      <form
+        className="relative flex min-w-0 flex-col gap-3 sm:flex-row"
+        onSubmit={submitSearch}
+      >
         <label className="sr-only" htmlFor="place-search">
           Search businesses, dishes, or neighbourhoods
         </label>
         <input
-          className="min-h-12 min-w-0 flex-1 rounded-xl border border-border bg-surface px-4 text-base shadow-sm placeholder:text-muted/80"
+          className="min-h-12 min-w-0 flex-1 rounded-xl border border-border bg-surface px-4 pr-14 text-base shadow-sm placeholder:text-muted/80"
           id="place-search"
           onChange={(event) => setSearchValue(event.currentTarget.value)}
           placeholder="Search a place, dish, or neighbourhood"
@@ -202,11 +206,13 @@ export function DiscoveryExplorer({
           value={searchValue}
         />
         <button
-          className="min-h-12 rounded-xl bg-accent px-6 font-semibold text-white hover:bg-accent-strong disabled:opacity-60"
+          aria-label="Search places"
+          className="absolute right-1 top-1/2 grid size-10 -translate-y-1/2 place-items-center rounded-lg bg-accent text-white hover:bg-accent-strong disabled:opacity-60 sm:static sm:size-12 sm:translate-y-0 sm:px-6"
           disabled={isPending}
           type="submit"
         >
-          Search
+          <Search aria-hidden="true" size={19} />
+          <span className="sr-only sm:not-sr-only">Search</span>
         </button>
       </form>
 
@@ -242,21 +248,23 @@ export function DiscoveryExplorer({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
-            className="min-h-11 rounded-xl border border-border bg-surface px-4 text-sm font-semibold hover:border-accent"
+            className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-4 text-sm font-semibold hover:border-accent"
             onClick={requestLocation}
             type="button"
           >
+            <LocateFixed aria-hidden="true" size={17} />
             Use my location
           </button>
           <button
             aria-expanded={filterOpen}
-            className="min-h-11 rounded-xl border border-border bg-surface px-4 text-sm font-semibold hover:border-accent"
+            className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-4 text-sm font-semibold hover:border-accent"
             onClick={() => {
               setDraftFilters(filters);
               setFilterOpen(true);
             }}
             type="button"
           >
+            <SlidersHorizontal aria-hidden="true" size={17} />
             Filters{activeCount ? ` · ${activeCount}` : ""}
           </button>
         </div>

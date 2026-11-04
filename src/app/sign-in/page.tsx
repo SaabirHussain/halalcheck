@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { signInAction } from "@/app/actions";
+import { SignInForm } from "@/components/account/SignInForm";
 
 export default async function SignIn({
   searchParams,
@@ -23,48 +23,8 @@ export default async function SignIn({
             Invalid email or password.
           </p>
         ) : null}
-        <form action={signInAction} className="mt-5 grid gap-3">
-          {next ? <input name="next" type="hidden" value={next} /> : null}
-          <label className="grid gap-1.5 text-sm font-semibold" htmlFor="email">
-            Email
-            <input
-              autoComplete="email"
-              className="min-h-11 rounded-xl border border-border px-3 font-normal"
-              id="email"
-              name="email"
-              required
-              type="email"
-            />
-          </label>
-          <label
-            className="grid gap-1.5 text-sm font-semibold"
-            htmlFor="password"
-          >
-            Password
-            <input
-              autoComplete="current-password"
-              className="min-h-11 rounded-xl border border-border px-3 font-normal"
-              id="password"
-              name="password"
-              required
-              type="password"
-            />
-          </label>
-          <button
-            className="mt-2 min-h-11 rounded-xl bg-accent px-4 font-semibold text-white hover:bg-accent-strong"
-            type="submit"
-          >
-            Sign in
-          </button>
-        </form>
-        <p className="mt-4 text-xs text-muted">
-          Demo account: user@demo.halalcheck.test · DemoUser!2026
-        </p>
+        <SignInForm demoMode={process.env.DEMO_MODE === "true"} next={next} />
         <p className="mt-4 text-sm text-muted">
-          <Link className="underline underline-offset-2" href="/sign-up">
-            Create an account
-          </Link>{" "}
-          ·{" "}
           <Link className="underline underline-offset-2" href="/about">
             How this directory works
           </Link>

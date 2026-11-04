@@ -1,0 +1,361 @@
+import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import { db as defaultDb } from "@/db";
+import {
+  certificates,
+  claims,
+  contactEndpoints,
+  corrections,
+  investigations,
+  outreachMessages,
+  outreachThreads,
+  sources,
+  suppressions,
+  unexpectedReplies,
+} from "@/db/schema";
+import type { JobQueue } from "@/lib/jobs/types";
+import { redactPublicExcerpt } from "./public";
+import type { Actor } from "./actor";
+import { requireAdminActor } from "./actor";
+import { writeAudit } from "./audit";
+import { ingestInboundEmail } from "./inbound-email";
+
+type Database = typeof defaultDb;
+
+export async function addContactEndpoint(
+  actor: Actor,
+  input: {
+    branchId: string;
+    value: string;
+    kind: "email" | "phone" | "web_form";
+    notes?: string;
+    isPersonal: boolean;
+  },
+  database: Database = defaultDb,
+) {
+  const admin = await requireAdminActor(actor, database);
+  if (!input.value.trim()) throw new Error("Contact value is required.");
+  const [row] = await database
+    .insert(contactEndpoints)
+    .values({
+      branchId: input.branchId,
+      value: input.value.trim().slice(0, 500),
+      kind: input.kind,
+      notes: input.notes?.trim().slice(0, 1000) || null,
+      isPersonal: input.isPersonal,
+      status: "unverified",
+    })
+    .returning({ id: contactEndpoints.id });
+  await writeAudit(database, {
+    actorUserId: admin.id,
+    actorType: "admin",
+    action: "contact_endpoint_added",
+    entityType: "contact_endpoint",
+    entityId: row!.id,
+  });
+  return row!;
+}
+
+export async function editOutreachDraft(
+  actor: Actor,
+  messageId: string,
+  input: { subject: string; bodyText: string; questions: string[] },
+  database: Database = defaultDb,
+) {
+  const admin = await requireAdminActor(actor, database);
+  if (!input.subject.trim() || !input.bodyText.trim()) {
+    throw new Error("Draft subject and body are required.");
+  }
+  const [row] = await database
+    .update(outreachMessages)
+    .set({
+      subject: input.subject.trim().slice(0, 500),
+      bodyText: input.bodyText.trim().slice(0, 10000),
+      questions: [...new Set(input.questions)],
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(outreachMessages.id, messageId),
+        eq(outreachMessages.direction, "outbound"),
+        eq(outreachMessages.status, "draft"),
+      ),
+    )
+    .returning({ id: outreachMessages.id });
+  if (!row) throw new Error("Draft message not found or already reviewed.");
+  await writeAudit(database, {
+    actorUserId: admin.id,
+    actorType: "admin",
+    action: "outreach_draft_edited",
+    entityType: "outreach_message",
+    entityId: messageId,
+  });
+}
+
+export async function updateSourceExcerpt(
+  actor: Actor,
+  sourceId: string,
+  input: { publicExcerpt: string; isPublic: boolean },
+  database: Database = defaultDb,
+) {
+  const admin = await requireAdminActor(actor, database);
+  const excerpt = redactPublicExcerpt(input.publicExcerpt.trim());
+  const [row] = await database
+    .update(sources)
+    .set({
+      publicExcerpt: excerpt || null,
+      isPublic: input.isPublic,
+      updatedAt: new Date(),
+    })
+    .where(eq(sources.id, sourceId))
+    .returning({ id: sources.id });
+  if (!row) throw new Error("Source not found.");
+  await writeAudit(database, {
+    actorUserId: admin.id,
+    actorType: "admin",
+    action: "source_excerpt_updated",
+    entityType: "source",
+    entityId: sourceId,
+    metadata: { isPublic: input.isPublic },
+  });
+}
+
+export async function reviewContactEndpoint(
+  actor: Actor,
+  endpointId: string,
+  status: "approved" | "rejected" | "ambiguous",
+  database: Database = defaultDb,
+) {
+  const admin = await requireAdminActor(actor, database);
+  const [row] = await database
+    .update(contactEndpoints)
+    .set({ status, updatedAt: new Date() })
+    .where(eq(contactEndpoints.id, endpointId))
+    .returning({ id: contactEndpoints.id });
+  if (!row) throw new Error("Contact endpoint not found.");
+  await writeAudit(database, {
+    actorUserId: admin.id,
+    actorType: "admin",
+    action: `contact_endpoint_${status}`,
+    entityType: "contact_endpoint",
+    entityId: endpointId,
+  });
+}
+
+export async function reviewCertificate(
+  actor: Actor,
+  certificateId: string,
+  input: {
+    status: "accepted" | "rejected";
+    validFrom: string | null;
+    validUntil: string | null;
+    coversBranch: boolean | null;
+  },
+  database: Database = defaultDb,
+) {
+  const admin = await requireAdminActor(actor, database);
+  const [row] = await database
+    .update(certificates)
+    .set({
+      reviewStatus: input.status,
+      validFrom: input.validFrom,
+      validUntil: input.validUntil,
+      coversBranch: input.coversBranch,
+      reviewedBy: admin.id,
+      updatedAt: new Date(),
+    })
+    .where(eq(certificates.id, certificateId))
+    .returning({ id: certificates.id });
+  if (!row) throw new Error("Certificate not found.");
+  await writeAudit(database, {
+    actorUserId: admin.id,
+    actorType: "admin",
+    action:
+      input.status === "accepted"
+        ? "certificate_accepted"
+        : "certificate_rejected",
+    entityType: "certificate",
+    entityId: certificateId,
+    metadata: {
+      validFrom: input.validFrom,
+      validUntil: input.validUntil,
+      coversBranch: input.coversBranch,
+    },
+  });
+}
+
+export async function editProposedClaim(
+  actor: Actor,
+  claimId: string,
+  value: string,
+  database: Database = defaultDb,
+) {
+  const admin = await requireAdminActor(actor, database);
+  if (!value.trim()) throw new Error("Claim value is required.");
+  const [row] = await database
+    .update(claims)
+    .set({ value: value.trim().slice(0, 1000), updatedAt: new Date() })
+    .where(and(eq(claims.id, claimId), eq(claims.status, "proposed")))
+    .returning({ id: claims.id });
+  if (!row) throw new Error("Proposed claim not found.");
+  await writeAudit(database, {
+    actorUserId: admin.id,
+    actorType: "admin",
+    action: "proposed_claim_edited",
+    entityType: "claim",
+    entityId: claimId,
+  });
+}
+
+export async function removeSuppression(
+  actor: Actor,
+  suppressionId: string,
+  database: Database = defaultDb,
+) {
+  const admin = await requireAdminActor(actor, database);
+  const [row] = await database
+    .delete(suppressions)
+    .where(eq(suppressions.id, suppressionId))
+    .returning({
+      id: suppressions.id,
+      valueNormalized: suppressions.valueNormalized,
+    });
+  if (!row) throw new Error("Suppression not found.");
+  await writeAudit(database, {
+    actorUserId: admin.id,
+    actorType: "admin",
+    action: "suppression_removed",
+    entityType: "suppression",
+    entityId: row.id,
+    metadata: { value: row.valueNormalized },
+  });
+}
+
+export async function dismissUnexpectedReply(
+  actor: Actor,
+  replyId: string,
+  database: Database = defaultDb,
+) {
+  const admin = await requireAdminActor(actor, database);
+  const [row] = await database
+    .update(unexpectedReplies)
+    .set({ reviewStatus: "dismissed", updatedAt: new Date() })
+    .where(eq(unexpectedReplies.id, replyId))
+    .returning({ id: unexpectedReplies.id });
+  if (!row) throw new Error("Unexpected reply not found.");
+  await writeAudit(database, {
+    actorUserId: admin.id,
+    actorType: "admin",
+    action: "unexpected_reply_dismissed",
+    entityType: "unexpected_reply",
+    entityId: replyId,
+  });
+}
+
+export async function assignUnexpectedReply(
+  actor: Actor,
+  replyId: string,
+  threadId: string,
+  queue: JobQueue,
+  database: Database = defaultDb,
+) {
+  const admin = await requireAdminActor(actor, database);
+  const [reply] = await database
+    .select()
+    .from(unexpectedReplies)
+    .where(eq(unexpectedReplies.id, replyId))
+    .limit(1);
+  const [thread] = await database
+    .select()
+    .from(outreachThreads)
+    .where(eq(outreachThreads.id, threadId))
+    .limit(1);
+  if (!reply || !thread) throw new Error("Reply or thread not found.");
+  await ingestInboundEmail(
+    actor,
+    {
+      provider: "admin-assignment",
+      eventId: randomUUID(),
+      from: reply.fromAddress,
+      to: `reply+${thread.threadToken}@demo.halalcheck.test`,
+      subject: reply.subject,
+      text: reply.bodyText,
+      receivedAt: reply.receivedAt,
+    },
+    queue,
+    database,
+  );
+  await database
+    .update(unexpectedReplies)
+    .set({ reviewStatus: "assigned", updatedAt: new Date() })
+    .where(eq(unexpectedReplies.id, replyId));
+  await writeAudit(database, {
+    actorUserId: admin.id,
+    actorType: "admin",
+    action: "unexpected_reply_assigned",
+    entityType: "unexpected_reply",
+    entityId: replyId,
+    metadata: { threadId },
+  });
+}
+
+export async function convertCorrectionToRefresh(
+  actor: Actor,
+  correctionId: string,
+  queue: JobQueue,
+  database: Database = defaultDb,
+) {
+  const admin = await requireAdminActor(actor, database);
+  const [correction] = await database
+    .select()
+    .from(corrections)
+    .where(eq(corrections.id, correctionId))
+    .limit(1);
+  if (!correction || correction.status !== "accepted") {
+    throw new Error("Only an accepted correction can trigger a refresh.");
+  }
+  const [active] = await database
+    .select({ id: investigations.id })
+    .from(investigations)
+    .where(
+      and(
+        eq(investigations.branchId, correction.branchId),
+        eq(investigations.isActive, true),
+      ),
+    )
+    .limit(1);
+  let investigationId = active?.id;
+  if (!investigationId) {
+    const [created] = await database
+      .insert(investigations)
+      .values({
+        branchId: correction.branchId,
+        kind: "refresh",
+        status: "queued",
+        isActive: true,
+      })
+      .onConflictDoNothing()
+      .returning({ id: investigations.id });
+    investigationId = created?.id;
+  }
+  if (!investigationId)
+    throw new Error("A refresh investigation already exists.");
+  await database
+    .update(corrections)
+    .set({ status: "converted", updatedAt: new Date() })
+    .where(eq(corrections.id, correctionId));
+  await writeAudit(database, {
+    actorUserId: admin.id,
+    actorType: "admin",
+    action: "correction_converted_to_refresh",
+    entityType: "correction",
+    entityId: correctionId,
+    metadata: { investigationId },
+  });
+  await queue.enqueue(
+    "investigation.public_research",
+    { investigationId },
+    { singletonKey: `public_research:${investigationId}` },
+  );
+  return investigationId;
+}

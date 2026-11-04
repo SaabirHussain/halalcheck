@@ -1,23 +1,25 @@
-import { signUpAction } from "@/app/actions";
-export default function SignUp() {
+import { SignUpForm } from "@/components/account/SignUpForm";
+
+export default async function SignUp({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string }>;
+}) {
+  const { next } = await searchParams;
   return (
-    <main className="form-card">
-      <h1>Create an account</h1>
-      <form action={signUpAction}>
-        <label htmlFor="displayName">Name</label>
-        <input id="displayName" name="displayName" required />
-        <label htmlFor="email">Email</label>
-        <input id="email" type="email" name="email" required />
-        <label htmlFor="password">Password (12 characters minimum)</label>
-        <input
-          id="password"
-          type="password"
-          name="password"
-          minLength={12}
-          required
-        />
-        <button className="button">Create account</button>
-      </form>
+    <main className="mx-auto grid min-h-[65vh] max-w-md content-center px-4 py-10">
+      <div className="rounded-card border border-border bg-surface p-6 shadow-sm sm:p-8">
+        <p className="text-xs font-bold uppercase tracking-[0.15em] text-accent">
+          Join the community
+        </p>
+        <h1 className="mt-2 font-display text-3xl font-semibold">
+          Create an account
+        </h1>
+        <p className="mt-2 text-sm text-muted">
+          Follow research and save branches to revisit.
+        </p>
+        <SignUpForm next={next} />
+      </div>
     </main>
   );
 }

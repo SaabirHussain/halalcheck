@@ -1,5 +1,6 @@
 "use client";
 
+import { X } from "lucide-react";
 import type { DiscoveryFilterState } from "./filter-types";
 
 const statusOptions = [
@@ -29,13 +30,13 @@ export function FiltersPanel({
     <>
       <button
         aria-label="Close filters"
-        className="fixed inset-0 z-40 bg-ink/30 backdrop-blur-[1px]"
+        className="fixed inset-0 z-50 bg-ink/30 backdrop-blur-[1px]"
         onClick={onClose}
         type="button"
       />
       <aside
         aria-label="Discovery filters"
-        className="fixed inset-x-0 bottom-0 z-50 max-h-[88dvh] overflow-y-auto rounded-t-[1.25rem] border border-border bg-surface p-5 shadow-2xl md:inset-y-0 md:left-auto md:right-0 md:w-[min(24rem,100vw)] md:max-h-none md:rounded-none md:border-y-0 md:border-r-0 md:pt-8"
+        className="fixed inset-x-0 bottom-0 z-[60] max-h-[88dvh] overflow-y-auto rounded-t-[1.25rem] border border-border bg-surface p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] shadow-2xl md:inset-y-0 md:left-auto md:right-0 md:w-[min(24rem,100vw)] md:max-h-none md:rounded-none md:border-y-0 md:border-r-0 md:pt-8 md:pb-5"
         role="dialog"
         aria-modal="true"
       >
@@ -50,11 +51,11 @@ export function FiltersPanel({
           </div>
           <button
             aria-label="Close filters"
-            className="grid size-11 place-items-center rounded-full border border-border text-lg hover:bg-surface-2"
+            className="grid size-11 place-items-center rounded-full border border-border hover:bg-surface-2"
             onClick={onClose}
             type="button"
           >
-            ×
+            <X aria-hidden="true" size={18} />
           </button>
         </div>
 

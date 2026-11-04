@@ -1,3 +1,11 @@
+import {
+  BadgeCheck,
+  CircleDashed,
+  Clock3,
+  RefreshCw,
+  TriangleAlert,
+  type LucideIcon,
+} from "lucide-react";
 import type { ResearchStatus } from "@/lib/shared/types";
 
 const statusLabels: Record<ResearchStatus, string> = {
@@ -26,16 +34,16 @@ const statusStyles: Record<ResearchStatus, string> = {
   needs_refresh: "bg-warn-soft text-warn",
 };
 
-const statusIcons: Record<ResearchStatus, string> = {
-  not_researched: "○",
-  queued: "◷",
-  checking_public_sources: "◷",
-  awaiting_outreach_approval: "◷",
-  awaiting_business_response: "◷",
-  reviewing_evidence: "◷",
-  findings_published: "✓",
-  unable_to_confirm: "!",
-  needs_refresh: "↻",
+const statusIcons: Record<ResearchStatus, LucideIcon> = {
+  not_researched: CircleDashed,
+  queued: Clock3,
+  checking_public_sources: Clock3,
+  awaiting_outreach_approval: Clock3,
+  awaiting_business_response: Clock3,
+  reviewing_evidence: Clock3,
+  findings_published: BadgeCheck,
+  unable_to_confirm: TriangleAlert,
+  needs_refresh: RefreshCw,
 };
 
 export function StatusBadge({
@@ -53,17 +61,19 @@ export function StatusBadge({
       <span
         className={`inline-flex min-h-8 items-center gap-2 rounded-full bg-surface-2 px-3 py-1 text-xs font-semibold text-muted ${className}`}
       >
-        <span aria-hidden="true">○</span>
+        <CircleDashed aria-hidden="true" size={15} />
         Unknown — not confirmed
       </span>
     );
   }
 
+  const Icon = statusIcons[knownStatus];
+
   return (
     <span
       className={`inline-flex min-h-8 items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${statusStyles[knownStatus]} ${className}`}
     >
-      <span aria-hidden="true">{statusIcons[knownStatus]}</span>
+      <Icon aria-hidden="true" size={15} />
       {statusLabels[knownStatus]}
     </span>
   );

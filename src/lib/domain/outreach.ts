@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gte, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   branches,
@@ -13,6 +13,7 @@ import {
   suppressions,
 } from "@/db/schema";
 import { getEmailProvider } from "@/lib/providers/email";
+import type { EmailProvider } from "@/lib/providers/email/types";
 import type { JobQueue } from "@/lib/jobs/types";
 import type { Actor } from "./actor";
 import { requireAdminActor } from "./actor";
@@ -113,13 +114,35 @@ export function openQuestionKeysForClaims(
   return researchQuestions.filter((question) => {
     const answers = knownClaims.filter(
       (claim) =>
-        claim.product === question.product &&
+        (question.product === "general" ||
+          claim.product === question.product) &&
         claim.attribute === question.attribute &&
         claim.valueEnum !== "unknown" &&
         !/\b(not sure|unknown|don't know|do not know)\b/i.test(claim.value),
     );
     return answers.length === 0;
   });
+}
+
+export function vagueAnswerTargetQuestionKeys(vagueSignals: string[]) {
+  const targetKeys = new Set<string>();
+  if (vagueSignals.includes("general_halal_claim")) {
+    for (const key of [
+      "chicken_supplier",
+      "beef_supplier",
+      "lamb_supplier",
+      "chicken_slaughter",
+      "beef_slaughter",
+      "certifier",
+    ]) {
+      targetKeys.add(key);
+    }
+  }
+  if (vagueSignals.includes("certified_no_org")) {
+    targetKeys.add("certifier");
+    targetKeys.add("certificate");
+  }
+  return targetKeys;
 }
 
 export async function createOutreachDraft(
@@ -250,6 +273,29 @@ export async function createOutreachDraft(
       options,
     );
   }
+  const [pendingMessage] = await database
+    .select({ id: outreachMessages.id })
+    .from(outreachMessages)
+    .where(
+      and(
+        eq(outreachMessages.threadId, threadId),
+        eq(outreachMessages.direction, "outbound"),
+        inArray(outreachMessages.status, [
+          "draft",
+          "approved",
+          "scheduled",
+          "sending",
+        ]),
+      ),
+    )
+    .orderBy(desc(outreachMessages.sequence))
+    .limit(1);
+  if (pendingMessage) {
+    return {
+      status: "awaiting_outreach_approval" as const,
+      messageId: pendingMessage.id,
+    };
+  }
   const [prior] = await database
     .select({ sequence: outreachMessages.sequence })
     .from(outreachMessages)
@@ -263,8 +309,39 @@ export async function createOutreachDraft(
     .limit(1);
   const sequence = (prior?.sequence ?? 0) + 1;
   const isFollowup = sequence > 1;
-  const questions = openQuestions.map((question) => question.key);
+  const priorOutbound = isFollowup
+    ? await database
+        .select({ questions: outreachMessages.questions })
+        .from(outreachMessages)
+        .where(
+          and(
+            eq(outreachMessages.threadId, threadId),
+            eq(outreachMessages.direction, "outbound"),
+          ),
+        )
+        .orderBy(asc(outreachMessages.sequence))
+    : [];
+  const priorQuestionKeys = new Set(
+    priorOutbound.flatMap((message) => message.questions),
+  );
   const vagueSignals = new Set(options.vagueSignals ?? []);
+  const vagueTargets = vagueAnswerTargetQuestionKeys([...vagueSignals]);
+  const questionScope = isFollowup
+    ? new Set([...priorQuestionKeys, ...vagueTargets])
+    : undefined;
+  const selectedQuestions = openQuestions
+    .filter((question) => !questionScope || questionScope.has(question.key))
+    .slice(0, isFollowup ? openQuestions.length : 3);
+  if (isFollowup && selectedQuestions.length === 0) {
+    if (queue)
+      await queue.enqueue(
+        "investigation.evidence_review",
+        { investigationId },
+        { singletonKey: `evidence_review:${investigationId}` },
+      );
+    return { status: "reviewing_evidence" as const, messageId: null };
+  }
+  const questions = selectedQuestions.map((question) => question.key);
   const targetedIntro = isFollowup
     ? vagueSignals.has("general_halal_claim")
       ? "Thank you — you mentioned your meat is halal. To summarise this accurately, could you tell us which suppliers provide each meat and which organization certifies them?"
@@ -281,7 +358,7 @@ export async function createOutreachDraft(
       ? `Thank you for your reply about ${investigation.businessName} (${investigation.branchName}).`
       : `I’m an automated research assistant on behalf of HalalCheck, a community research directory. We are reviewing ${investigation.businessName} (${investigation.branchName}) and would appreciate a few details:`,
     ...(targetedIntro ? [targetedIntro, ""] : []),
-    ...openQuestions.map((question) => `• ${question.prompt}`),
+    ...selectedQuestions.map((question) => `• ${question.prompt}`),
     ``,
     `Your answers may be summarized publicly with their source and date. We will not present unanswered questions as facts. You can opt out at any time by replying STOP.`,
     ``,
@@ -674,6 +751,7 @@ export async function sendOutreach(
   messageId: string,
   database: Database = defaultDb,
   queue?: JobQueue,
+  provider: EmailProvider = getEmailProvider(database),
 ) {
   if (actor.type !== "worker" && actor.type !== "system")
     throw new Error("Worker access required.");
@@ -849,7 +927,7 @@ export async function sendOutreach(
     .limit(1);
   let sent: Awaited<ReturnType<ReturnType<typeof getEmailProvider>["send"]>>;
   try {
-    sent = await getEmailProvider(database).send({
+    sent = await provider.send({
       to: endpoint.value,
       from: fromAddress,
       subject: message.subject,
