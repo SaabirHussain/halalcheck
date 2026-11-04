@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:16
+    container_name: halalcheck-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: halalcheck
+    ports:
+      - "5432:5432"
+    volumes:
+      - halalcheck-postgres-data:/var/lib/postgresql/data
+      - ./docker/init-databases.sql:/docker-entrypoint-initdb.d/01-init-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d halalcheck"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  halalcheck-postgres-data:
