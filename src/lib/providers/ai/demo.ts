@@ -5,6 +5,99 @@ import type {
   PublicClaim,
 } from "./types";
 
+type ReplyClause = {
+  text: string;
+  product: string | null;
+};
+
+const productTerms = [
+  "chicken",
+  "beef",
+  "lamb",
+  "goat",
+  "turkey",
+  "other meat",
+  "beverages",
+];
+
+const properNamePattern = /^[A-Z][\w'&.-]*(?:\s+(?:&\s+)?[A-Z][\w'&.-]*)*/;
+
+function getProductMentions(text: string) {
+  return productTerms.filter((product) =>
+    new RegExp(`\\b${product.replace(" ", "\\s+")}\\b`, "i").test(text),
+  );
+}
+
+function splitReplyClauses(text: string): ReplyClause[] {
+  const sentences: Array<{ start: number; end: number }> = [];
+  let sentenceStart = 0;
+  for (let index = 0; index < text.length; index++) {
+    if (/[.!?;]/.test(text[index]!)) {
+      sentences.push({ start: sentenceStart, end: index });
+      sentenceStart = index + 1;
+    }
+  }
+  sentences.push({ start: sentenceStart, end: text.length });
+
+  return sentences.flatMap(({ start, end }) => {
+    const sentence = text.slice(start, end);
+    const boundaries = [...sentence.matchAll(/,\s*and\b|\s+and\s+(?=it\b)/gi)];
+    const fragments: Array<{ start: number; end: number }> = [];
+    let cursor = 0;
+    for (const boundary of boundaries) {
+      const boundaryStart = boundary.index ?? cursor;
+      fragments.push({ start: cursor, end: boundaryStart });
+      cursor = boundaryStart + boundary[0].length;
+    }
+    fragments.push({ start: cursor, end: sentence.length });
+
+    let inheritedProduct: string | null = null;
+    return fragments.flatMap(({ start: fragmentStart, end: fragmentEnd }) => {
+      const raw = sentence.slice(fragmentStart, fragmentEnd);
+      const leadingWhitespace = raw.match(/^\s*/)?.[0].length ?? 0;
+      const trailingWhitespace = raw.match(/\s*$/)?.[0].length ?? 0;
+      const clause = raw.slice(
+        leadingWhitespace,
+        raw.length - trailingWhitespace,
+      );
+      if (!clause) return [];
+
+      const mentionedProducts = getProductMentions(clause);
+      let product: string | null = null;
+      if (mentionedProducts.length === 1) {
+        product = mentionedProducts[0]!;
+        inheritedProduct = product;
+      } else if (mentionedProducts.length > 1) {
+        inheritedProduct = null;
+      } else if (/^(?:it|they|this|that)\b/i.test(clause)) {
+        product = inheritedProduct;
+      } else {
+        inheritedProduct = null;
+      }
+
+      return [{ text: clause, product }];
+    });
+  });
+}
+
+function questionAttribute(question: OpenQuestion) {
+  if (question.attribute) return question.attribute;
+  if (question.key.includes("supplier")) return "supplier";
+  if (question.key.includes("slaughter")) return "slaughter_method";
+  if (question.key.includes("certifier")) return "certifier";
+  return null;
+}
+
+function questionProduct(question: OpenQuestion, attribute: string) {
+  return (
+    question.product ?? (attribute === "certifier" ? "general" : "chicken")
+  );
+}
+
+function isQuestionProductSpecific(product: string) {
+  return !["general", "menu", "kitchen", "beverages"].includes(product);
+}
+
 export class DemoAIProvider implements AIProvider {
   async extractPublicClaims(
     pages: Array<{ url: string; title: string; text: string }>,
@@ -93,70 +186,93 @@ export class DemoAIProvider implements AIProvider {
     );
     if (referral) vagueSignals.push("referral");
     const answers: ParsedReply["answers"] = [];
+    const clauses = splitReplyClauses(text);
+    const replyMentionsProducts = getProductMentions(text).length > 0;
 
-    for (const question of openQuestions) {
-      if (
-        question.key.includes("supplier") &&
-        /\b(supplier|provides|from)\b/i.test(text)
-      ) {
-        const supplier = text.match(
-          /(?:supplier is|supplier:|provided by|from)\s+([A-Z][\w &.-]+)/i,
-        );
-        if (supplier?.[0]) {
-          answers.push({
-            questionKey: question.key,
-            product:
-              (question.product as ParsedReply["answers"][number]["product"]) ??
-              "chicken",
-            attribute: "supplier",
-            value: supplier[1]!.trim(),
-            valueEnum: null,
-            specificity: "specific",
-            excerpt: supplier[0],
-          });
-        }
-      }
-      if (
-        question.key.includes("slaughter") &&
-        /\b(hand|machine)[ -]slaughtered\b/i.test(text)
-      ) {
-        const match = text.match(/(?:hand|machine)[ -]slaughtered/i);
-        if (match?.[0]) {
-          const method = match[0].toLowerCase().startsWith("hand")
-            ? "hand"
-            : "machine";
-          answers.push({
-            questionKey: question.key,
-            product:
-              (question.product as ParsedReply["answers"][number]["product"]) ??
-              "chicken",
-            attribute: "slaughter_method",
-            value: match[0],
-            valueEnum: method,
-            specificity: "specific",
-            excerpt: match[0],
-          });
-        }
-      }
-      if (
-        question.key.includes("certifier") &&
-        /\b(certified|certifier|certification)\b/i.test(text)
-      ) {
-        const named = text.match(
-          /(?:certified by|certifier is)\s+([A-Z][\w &.-]+?)(?:[.!?,]|$)/i,
-        );
-        if (named?.[0]) {
-          answers.push({
-            questionKey: question.key,
-            product:
-              (question.product as ParsedReply["answers"][number]["product"]) ??
-              "general",
-            attribute: "certifier",
-            value: named[0].trim(),
-            valueEnum: named[1]?.trim() ?? null,
-            specificity: named[1] ? "specific" : "vague",
-            excerpt: named[0],
-          });
+    for (const attribute of [
+      "supplier",
+      "slaughter_method",
+      "certifier",
+    ] as const) {
+      const questions = openQuestions.filter(
+        (question) => questionAttribute(question) === attribute,
+      );
+      for (const question of questions) {
+        const product = questionProduct(question, attribute);
+        const mayUseUnscopedClause =
+          !replyMentionsProducts && questions.length === 1;
+        for (const clause of clauses) {
+          if (
+            isQuestionProductSpecific(product) &&
+            clause.product !== product &&
+            !(mayUseUnscopedClause && clause.product === null)
+          ) {
+            continue;
+          }
+
+          if (attribute === "supplier") {
+            const supplierPrefix =
+              /\b(?:supplier\s+is|supplier\s*:|comes\s+from|is\s+from|from|provided\s+by|supplied\s+by)\s+/gi;
+            for (const prefix of clause.text.matchAll(supplierPrefix)) {
+              const prefixIndex = prefix.index ?? 0;
+              const nameStart = prefixIndex + prefix[0].length;
+              const supplier = clause.text
+                .slice(nameStart)
+                .match(properNamePattern);
+              if (!supplier?.[0]) continue;
+              const name = supplier[0].replace(/[.!?;,]+$/, "").trim();
+              if (!name) continue;
+              const excerptEnd = nameStart + supplier[0].length;
+              answers.push({
+                questionKey: question.key,
+                product: product as ParsedReply["answers"][number]["product"],
+                attribute,
+                value: name,
+                valueEnum: null,
+                specificity: "specific",
+                excerpt: clause.text.slice(prefixIndex, excerptEnd),
+              });
+            }
+          } else if (attribute === "slaughter_method") {
+            const slaughter = clause.text.match(
+              /\b(?:hand|machine)[ -]slaughtered\b/i,
+            );
+            if (!slaughter?.[0]) continue;
+            const method = slaughter[0].toLowerCase().startsWith("hand")
+              ? "hand"
+              : "machine";
+            answers.push({
+              questionKey: question.key,
+              product: product as ParsedReply["answers"][number]["product"],
+              attribute,
+              value: slaughter[0],
+              valueEnum: method,
+              specificity: "specific",
+              excerpt: slaughter[0],
+            });
+          } else {
+            const certifierPrefix = /\b(?:certified\s+by|certifier\s+is)\s+/gi;
+            for (const prefix of clause.text.matchAll(certifierPrefix)) {
+              const prefixIndex = prefix.index ?? 0;
+              const nameStart = prefixIndex + prefix[0].length;
+              const named = clause.text
+                .slice(nameStart)
+                .match(properNamePattern);
+              if (!named?.[0]) continue;
+              const name = named[0].replace(/[.!?;,]+$/, "").trim();
+              if (!name) continue;
+              const excerptEnd = nameStart + named[0].length;
+              answers.push({
+                questionKey: question.key,
+                product: product as ParsedReply["answers"][number]["product"],
+                attribute,
+                value: name,
+                valueEnum: name,
+                specificity: "specific",
+                excerpt: clause.text.slice(prefixIndex, excerptEnd),
+              });
+            }
+          }
         }
       }
     }

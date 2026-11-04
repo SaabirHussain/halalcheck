@@ -50,6 +50,7 @@ export default async function AccountPage({
         branchId: branches.id,
         status: investigations.status,
         stageDetail: investigations.stageDetail,
+        outcome: investigations.outcome,
         requestedAt: investigationSubscriptions.createdAt,
       })
       .from(investigationSubscriptions)
@@ -73,6 +74,7 @@ export default async function AccountPage({
                 businessName={row.businessName}
                 key={row.id}
                 requestedAt={row.requestedAt}
+                outcome={row.outcome}
                 stageDetail={row.stageDetail}
                 status={row.status}
               />

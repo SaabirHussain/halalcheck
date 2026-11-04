@@ -63,7 +63,6 @@ test("discovery and evidence-backed Cedar Grill publication workflow", async ({
   const admin = await browser.newPage();
   await signIn(admin, "admin@demo.halalcheck.test", "DemoAdmin!2026");
   await admin.goto("/admin/outreach");
-  await admin.getByLabel("Maximum follow-ups").fill("1");
   await admin.getByLabel("Minimum days between messages").fill("0");
   await admin.getByRole("button", { name: "Save settings" }).click();
   await admin.goto("/admin/investigations");
@@ -87,6 +86,19 @@ test("discovery and evidence-backed Cedar Grill publication workflow", async ({
   await approveForm.getByRole("button", { name: "Approve draft" }).click();
 
   await admin.goto(investigationHref);
+  const initialMessage = admin
+    .locator("article")
+    .filter({ hasText: /Initial message · #1/ })
+    .first();
+  await expect
+    .poll(
+      async () => {
+        await admin.reload();
+        return (await initialMessage.locator("p").first().textContent()) ?? "";
+      },
+      { timeout: 30_000 },
+    )
+    .toMatch(/Captured \(not sent\)|· Sent$/);
   const replyPreset = admin.getByLabel("Preset");
   await replyPreset.selectOption("vague");
   await expect(admin.getByLabel("Editable reply")).toHaveValue(
@@ -126,11 +138,11 @@ test("discovery and evidence-backed Cedar Grill publication workflow", async ({
     .poll(
       async () => {
         await admin.reload();
-        return followupDraft.getByText(/captured|sent/i).count();
+        return (await followupDraft.locator("p").first().textContent()) ?? "";
       },
       { timeout: 30_000 },
     )
-    .toBeGreaterThan(0);
+    .toMatch(/Captured \(not sent\)|· Sent$/);
 
   await admin.getByLabel("Preset").selectOption("clarification");
   await expect(admin.getByLabel("Editable reply")).toHaveValue(
@@ -139,6 +151,40 @@ test("discovery and evidence-backed Cedar Grill publication workflow", async ({
   await admin.getByRole("button", { name: "Simulate reply" }).click();
   await expect(admin).toHaveURL(/simulated=[0-9a-f-]{36}/);
   await expect(admin).not.toHaveURL(firstSimulationUrl);
+  await expect
+    .poll(
+      async () => {
+        await admin.reload();
+        return (await admin.getByRole("status").textContent()) ?? "";
+      },
+      { timeout: 60_000 },
+    )
+    .toContain("Reply parsed. A follow-up draft is ready for review.");
+
+  const finalFollowup = admin
+    .locator("article")
+    .filter({ hasText: /Follow-up message · #3/ })
+    .last();
+  await expect(
+    finalFollowup.getByRole("button", { name: "Approve" }),
+  ).toBeVisible();
+  await finalFollowup.getByRole("button", { name: "Approve" }).click();
+  await expect
+    .poll(
+      async () => {
+        await admin.reload();
+        return (await finalFollowup.locator("p").first().textContent()) ?? "";
+      },
+      { timeout: 30_000 },
+    )
+    .toMatch(/Captured \(not sent\)|· Sent$/);
+
+  await admin.getByLabel("Preset").selectOption("staff");
+  await expect(admin.getByLabel("Editable reply")).toHaveValue(
+    "Our staff don't know.",
+  );
+  await admin.getByRole("button", { name: "Simulate reply" }).click();
+  await expect(admin).toHaveURL(/simulated=[0-9a-f-]{36}/);
   await expect
     .poll(
       async () => {
@@ -160,13 +206,36 @@ test("discovery and evidence-backed Cedar Grill publication workflow", async ({
     .toBeGreaterThan(0);
   await admin.getByRole("link", { name: /review proposal/i }).click();
   await admin.waitForLoadState("networkidle");
+  const proposedFindings = admin
+    .getByRole("heading", { name: "Currently published vs proposed" })
+    .locator("..");
+  const chickenSupplier = proposedFindings
+    .locator("article")
+    .filter({ hasText: /Chicken\s*·\s*Supplier/i })
+    .filter({ hasText: "Green Valley Poultry" });
+  await expect(chickenSupplier).toHaveCount(1);
+  const beefSupplier = proposedFindings
+    .locator("article")
+    .filter({ hasText: /Beef\s*·\s*Supplier/i })
+    .filter({ hasText: "Prairie Meats" });
+  await expect(beefSupplier).toHaveCount(1);
+  await expect(
+    proposedFindings
+      .locator("article")
+      .filter({ hasText: /Lamb\s*·\s*Supplier/i }),
+  ).toHaveCount(0);
   const decisionGroups = admin.locator("fieldset");
   for (let index = 0; index < (await decisionGroups.count()); index += 1) {
-    const approval = decisionGroups
-      .nth(index)
-      .getByRole("radio", { name: "Approve" });
-    await approval.check();
-    await expect(approval).toBeChecked();
+    const group = decisionGroups.nth(index);
+    const legend = (await group.locator("legend").textContent()) ?? "";
+    const decision = /Chicken\s*·\s*Supplier:\s*Cedar Valley Poultry/i.test(
+      legend,
+    )
+      ? "Reject"
+      : "Approve";
+    const selection = group.getByRole("radio", { name: decision });
+    await selection.check();
+    await expect(selection).toBeChecked();
   }
   const materialConfirmations = admin.locator(
     'input[name="materialChangeConfirmed"]',
@@ -226,6 +295,12 @@ test("discovery and evidence-backed Cedar Grill publication workflow", async ({
       },
     )
     .toBeGreaterThan(0);
+  await user.goto("/me/requests");
+  const cedarRequest = user
+    .locator("article")
+    .filter({ hasText: /Cedar Grill/i });
+  await expect(cedarRequest).toContainText("Findings have been published");
+  await expect(cedarRequest).not.toContainText("awaits administrator review");
 
   await Promise.all([
     userContext.close(),

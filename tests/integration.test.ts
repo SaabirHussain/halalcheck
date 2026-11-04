@@ -51,7 +51,7 @@ import {
   ingestBounceEvent,
   ingestInboundEmail,
 } from "@/lib/domain/inbound-email";
-import { parseInboundReply } from "@/lib/domain/claims";
+import { parseInboundReply, reviewEvidence } from "@/lib/domain/claims";
 import {
   approveOutreachMessage,
   createOutreachDraft,
@@ -866,6 +866,14 @@ describe("webhooks, opt-outs, and outreach", () => {
       .from(outreachMessages)
       .where(eq(outreachMessages.id, cancelledDraft.messageId!));
     expect(cancelled!.status).toBe("cancelled");
+    const [closedInvestigation] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, cancelledInvestigation.id));
+    expect(closedInvestigation!.status).toBe("not_researched");
+    expect(closedInvestigation!.stageDetail).toContain(
+      "Research request closed",
+    );
   });
 
   it("uses a generic login error and enforces the per-email rate limit", async () => {
@@ -954,6 +962,63 @@ describe("AI, prompt injection, and SSRF defenses", () => {
         )
       ).optOut,
     ).toBe(true);
+  });
+
+  it("scopes reply answers by product and preserves exact excerpts", async () => {
+    const parser = new DemoAIProvider();
+    const clarification =
+      "Our chicken supplier is Green Valley Poultry and it is hand-slaughtered. Beef comes from Prairie Meats. We are certified by Demo Halal Certification Council.";
+    const allQuestions = researchQuestions.map((question) => ({
+      key: question.key,
+      prompt: question.prompt,
+      product: question.product,
+      attribute: question.attribute,
+    }));
+    const parsed = await parser.parseReply(clarification, allQuestions);
+    const answers = new Map(
+      parsed.answers.map((answer) => [answer.questionKey, answer]),
+    );
+
+    expect(answers.get("chicken_supplier")?.value).toBe("Green Valley Poultry");
+    expect(answers.get("chicken_slaughter")?.valueEnum).toBe("hand");
+    expect(answers.get("beef_supplier")?.value).toBe("Prairie Meats");
+    expect(answers.get("certifier")?.value).toBe(
+      "Demo Halal Certification Council",
+    );
+    expect(answers.has("lamb_supplier")).toBe(false);
+    expect(answers.has("beef_slaughter")).toBe(false);
+    expect(
+      parsed.answers.every((answer) => clarification.includes(answer.excerpt)),
+    ).toBe(true);
+
+    const beefAndLamb = await parser.parseReply(
+      clarification,
+      allQuestions.filter((question) =>
+        ["beef_supplier", "lamb_supplier", "beef_slaughter"].includes(
+          question.key,
+        ),
+      ),
+    );
+    expect(
+      beefAndLamb.answers.find(
+        (answer) => answer.questionKey === "beef_supplier",
+      )?.value,
+    ).toBe("Prairie Meats");
+    expect(
+      beefAndLamb.answers.some(
+        (answer) =>
+          answer.questionKey === "lamb_supplier" ||
+          answer.product === "chicken",
+      ),
+    ).toBe(false);
+    expect(
+      (
+        await parser.parseReply(
+          "All our meat is halal.",
+          allQuestions.filter((question) => question.key.includes("supplier")),
+        )
+      ).answers.some((answer) => answer.attribute === "supplier"),
+    ).toBe(false);
   });
 
   it("treats AI provider failures as errors rather than fabricated findings", async () => {
@@ -1545,6 +1610,47 @@ describe("remaining requested regressions", () => {
     );
     expect(await database.select().from(publishedRevisions)).toHaveLength(1);
   });
+
+  it("sets terminal stage text when closing an unable-to-confirm proposal", async () => {
+    const admin = await createUser("admin");
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id);
+    const [proposal] = await database
+      .insert(proposedUpdates)
+      .values({
+        branchId: branch.id,
+        investigationId: investigation.id,
+        publicSummary:
+          "We could not confirm current findings. This is not a finding that the food is non-halal.",
+      })
+      .returning();
+    const { queue } = queueRecorder();
+
+    await publishProposedUpdate(
+      { type: "admin", userId: admin.id },
+      proposal!.id,
+      {
+        approvedClaimIds: [],
+        publicSummary:
+          "We could not confirm current findings. This is not a finding that the food is non-halal.",
+        changeSummary: "Closed without confirming current findings.",
+      },
+      queue,
+      database,
+    );
+
+    const [closedInvestigation] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, investigation.id));
+    expect(closedInvestigation!.status).toBe("unable_to_confirm");
+    expect(closedInvestigation!.stageDetail).toContain(
+      "Unable to confirm current findings",
+    );
+    expect(closedInvestigation!.stageDetail).not.toContain(
+      "awaits administrator review",
+    );
+  });
 });
 
 describe("publication notifications and fixture coverage", () => {
@@ -1571,6 +1677,136 @@ describe("publication notifications and fixture coverage", () => {
       await notifyFollowers({ type: "worker" }, revision!.id, database),
     ).toBe(0);
     expect(await database.select().from(notifications)).toHaveLength(1);
+  });
+
+  it("records off-question clarification claims and flags conflicting website evidence", async () => {
+    const { branch } = await createBranch({
+      website: "https://cedar.demo.halalcheck.test/",
+    });
+    const investigation = await createInvestigation(branch.id);
+    const [websiteSource] = await database
+      .insert(sources)
+      .values({
+        investigationId: investigation.id,
+        branchId: branch.id,
+        kind: "official_website",
+        title: "Cedar Grill sourcing page",
+        url: "https://cedar.demo.halalcheck.test/sourcing",
+        rawText: "Chicken supplier: Cedar Valley Poultry.",
+        isPublic: true,
+        publicExcerpt: "Chicken supplier: Cedar Valley Poultry.",
+      })
+      .returning();
+    await database.insert(claims).values({
+      branchId: branch.id,
+      investigationId: investigation.id,
+      product: "chicken",
+      attribute: "supplier",
+      value: "Cedar Valley Poultry",
+      evidenceCategory: "public_website",
+      status: "proposed",
+      sourceId: websiteSource!.id,
+      supportingExcerpt: "Chicken supplier: Cedar Valley Poultry.",
+    });
+    const [endpoint] = await database
+      .insert(contactEndpoints)
+      .values({
+        branchId: branch.id,
+        kind: "email",
+        value: "owner@cedar.demo.halalcheck.test",
+        status: "approved",
+      })
+      .returning();
+    const [thread] = await database
+      .insert(outreachThreads)
+      .values({
+        investigationId: investigation.id,
+        branchId: branch.id,
+        contactEndpointId: endpoint!.id,
+        threadToken: "clarification-all-questions",
+      })
+      .returning();
+    const [followup] = await database
+      .insert(outreachMessages)
+      .values({
+        threadId: thread!.id,
+        direction: "outbound",
+        sequence: 2,
+        kind: "followup",
+        status: "sent",
+        subject: "Research follow-up",
+        bodyText: "Which suppliers provide your beef and lamb?",
+        questions: [
+          "beef_supplier",
+          "lamb_supplier",
+          "beef_slaughter",
+          "certifier",
+        ],
+        messageIdHeader: "<clarification-followup@halalcheck.test>",
+        idempotencyKey: "clarification-followup",
+      })
+      .returning();
+    const { queue } = queueRecorder();
+    const clarification =
+      "Our chicken supplier is Green Valley Poultry and it is hand-slaughtered. Beef comes from Prairie Meats. We are certified by Demo Halal Certification Council.";
+    const inbound = await ingestInboundEmail(
+      { type: "system" },
+      {
+        provider: "simulator",
+        eventId: "product-scoped-clarification",
+        from: endpoint!.value,
+        to: `reply+${thread!.threadToken}@demo.halalcheck.test`,
+        subject: "Re: Research follow-up",
+        text: clarification,
+        messageId: "<product-scoped-clarification@halalcheck.test>",
+        inReplyTo: followup!.messageIdHeader,
+        receivedAt: new Date(),
+      },
+      queue,
+      database,
+    );
+    const result = await parseInboundReply(
+      { type: "worker" },
+      inbound.messageId!,
+      queue,
+      database,
+    );
+    const branchClaims = await database
+      .select()
+      .from(claims)
+      .where(eq(claims.branchId, branch.id));
+    expect(result).toMatchObject({ conflict: true, followupDrafted: true });
+    expect(
+      branchClaims.some(
+        (claim) =>
+          claim.product === "chicken" &&
+          claim.attribute === "supplier" &&
+          claim.value === "Green Valley Poultry" &&
+          claim.evidenceCategory === "restaurant_claim",
+      ),
+    ).toBe(true);
+    expect(
+      branchClaims.some(
+        (claim) =>
+          claim.product === "beef" &&
+          claim.attribute === "supplier" &&
+          claim.value === "Prairie Meats" &&
+          claim.evidenceCategory === "restaurant_claim",
+      ),
+    ).toBe(true);
+
+    const proposalId = await reviewEvidence(
+      { type: "worker" },
+      investigation.id,
+      database,
+    );
+    const [proposal] = await database
+      .select()
+      .from(proposedUpdates)
+      .where(eq(proposedUpdates.id, proposalId));
+    expect(proposal!.flags.some((flag) => flag.type === "contradiction")).toBe(
+      true,
+    );
   });
 
   it("runs the full demo research, approval, simulator reply, review, publication, and notification flow", async () => {
@@ -1722,6 +1958,14 @@ describe("publication notifications and fixture coverage", () => {
       },
       queue,
       database,
+    );
+    const [completedInvestigation] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, requested.investigationId));
+    expect(completedInvestigation!.stageDetail).toBe("Findings published.");
+    expect(completedInvestigation!.stageDetail).not.toContain(
+      "awaits administrator review",
     );
     expect(
       (await database.select().from(notifications)).length,

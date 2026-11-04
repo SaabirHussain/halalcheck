@@ -23,6 +23,7 @@ import {
   openQuestionKeysForClaims,
   researchQuestions,
   createOutreachDraft,
+  vagueAnswerTargetQuestionKeys,
 } from "./outreach";
 
 type Database = typeof defaultDb;
@@ -99,7 +100,10 @@ export async function parseInboundReply(
         latestOutbound.questions.includes(question.key),
       )
     : researchQuestions;
-  const openQuestions: OpenQuestion[] = requestedQuestions.map((question) => ({
+  const requestedQuestionKeys = new Set(
+    requestedQuestions.map((question) => question.key),
+  );
+  const openQuestions: OpenQuestion[] = researchQuestions.map((question) => ({
     key: question.key,
     prompt: question.prompt,
     product: question.product,
@@ -299,12 +303,6 @@ export async function parseInboundReply(
         updatedAt: new Date(),
       })
       .where(eq(investigations.id, thread.investigationId));
-    await queue.enqueue(
-      "investigation.evidence_review",
-      { investigationId: thread.investigationId },
-      { singletonKey: `evidence_review:${thread.investigationId}` },
-    );
-    return { parsed: true, conflict: true, claimsCreated };
   }
 
   const updatedClaims = await database
@@ -324,15 +322,40 @@ export async function parseInboundReply(
   const stillOpen = openQuestionKeysForClaims(updatedClaims);
   const [settings] = await database.select().from(outreachSettings).limit(1);
   const maxFollowups = settings?.maxFollowups ?? 2;
+  const stillOpenKeys = new Set<string>(
+    stillOpen.map((question) => question.key),
+  );
+  const hasUnansweredRequestedQuestion = [...requestedQuestionKeys].some(
+    (key) => stillOpenKeys.has(key),
+  );
+  const hasUnansweredVagueTarget = [
+    ...vagueAnswerTargetQuestionKeys(parsed.vagueSignals),
+  ].some((key) => stillOpenKeys.has(key));
   const followupsObservedInThread =
     replyTarget?.kind === "followup"
       ? Math.max(thread.followupsSent, replyTarget.sequence - 1)
       : thread.followupsSent;
-  if (stillOpen.length && followupsObservedInThread < maxFollowups) {
-    await createOutreachDraft(actor, thread.investigationId, database, queue, {
-      vagueSignals: parsed.vagueSignals,
-    });
-    return { parsed: true, claimsCreated, followupDrafted: true };
+  if (
+    (hasUnansweredRequestedQuestion || hasUnansweredVagueTarget) &&
+    followupsObservedInThread < maxFollowups
+  ) {
+    const followup = await createOutreachDraft(
+      actor,
+      thread.investigationId,
+      database,
+      queue,
+      {
+        vagueSignals: parsed.vagueSignals,
+      },
+    );
+    return {
+      parsed: true,
+      ...(conflictClaimIds.length || conflictingAnswers
+        ? { conflict: true }
+        : {}),
+      claimsCreated,
+      followupDrafted: followup.messageId !== null,
+    };
   }
   await database
     .update(investigations)
@@ -349,6 +372,9 @@ export async function parseInboundReply(
   );
   return {
     parsed: true,
+    ...(conflictClaimIds.length || conflictingAnswers
+      ? { conflict: true }
+      : {}),
     claimsCreated,
     followupDrafted: false,
     unanswered: stillOpen.map((question) => question.key),

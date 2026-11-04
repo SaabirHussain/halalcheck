@@ -157,6 +157,10 @@ export async function cancelInvestigation(
     await tx
       .update(investigations)
       .set({
+        status,
+        stageDetail: latest
+          ? "Research request closed by an administrator. Existing findings remain published."
+          : "Research request closed by an administrator without published findings.",
         isActive: false,
         cancelledAt: new Date(),
         outcome: "cancelled by administrator",

@@ -236,6 +236,9 @@ export async function publishProposedUpdate(
           status: approvedClaims.length
             ? "findings_published"
             : "unable_to_confirm",
+          stageDetail: approvedClaims.length
+            ? "Findings published."
+            : "Unable to confirm current findings. This is not a finding that the food is non-halal.",
           isActive: false,
           outcome: approvedClaims.length ? "published" : "unable to confirm",
           updatedAt: now,

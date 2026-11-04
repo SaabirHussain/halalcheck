@@ -8,6 +8,7 @@ export function AccountRequestCard({
   branchId,
   status,
   stageDetail,
+  outcome,
   requestedAt,
 }: {
   businessName: string;
@@ -15,8 +16,20 @@ export function AccountRequestCard({
   branchId: string;
   status: ResearchStatus;
   stageDetail: string | null;
+  outcome: string | null;
   requestedAt: Date;
 }) {
+  const bodyText =
+    outcome === "cancelled by administrator"
+      ? status === "findings_published"
+        ? "This research request was closed; its published findings remain available."
+        : "This research request was closed by an administrator."
+      : status === "findings_published"
+        ? "Findings have been published for this branch."
+        : status === "unable_to_confirm"
+          ? "Unable to confirm current findings. This is not a finding that the food is non-halal."
+          : stageDetail;
+
   return (
     <article className="rounded-card border border-border bg-surface p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -26,9 +39,7 @@ export function AccountRequestCard({
         </div>
         <StatusBadge status={status} />
       </div>
-      {stageDetail ? (
-        <p className="mt-3 text-sm text-muted">{stageDetail}</p>
-      ) : null}
+      {bodyText ? <p className="mt-3 text-sm text-muted">{bodyText}</p> : null}
       <p className="mt-3 text-xs text-muted">
         Requested{" "}
         {new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(
