@@ -181,9 +181,9 @@ export async function purgeExpiredProviderCache(
       if (!branch.externalId) throw new Error("Provider place ID missing.");
       if (
         branch.provider === "google" &&
-        !(await consumeGoogleDetailsLimit(database, now))
+        !(await consumeGoogleDetailsLimit(database, "public", now))
       ) {
-        throw new Error("Google Places details limit reached.");
+        break;
       }
       const details = await provider.getPlace(branch.externalId, "summary");
       if (!details) throw new Error("Provider place details unavailable.");

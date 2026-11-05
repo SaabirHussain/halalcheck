@@ -27,7 +27,7 @@ import {
 import { retryJobAction } from "@/app/admin/actions";
 import { ReplySimulator } from "@/components/admin/ReplySimulator";
 import { researchQuestions } from "@/lib/domain/outreach";
-import { hydrateProviderBranches } from "@/lib/domain/public";
+import { hydrateAdminBranchRows } from "@/lib/domain/admin-place-references";
 import { GoogleAttribution } from "@/components/ui/GoogleAttribution";
 import {
   formatAdminDateTime,
@@ -69,7 +69,14 @@ export default async function InvestigationDetail({
     .where(eq(branches.id, row.branchId))
     .limit(1);
   const [branch] = branchRow
-    ? await hydrateProviderBranches([{ ...branchRow, attribution: false }])
+    ? await hydrateAdminBranchRows([
+        {
+          ...branchRow,
+          branchId: branchRow.id,
+          business: branchRow.name,
+          branch: branchRow.branchName,
+        },
+      ])
     : [undefined];
   const sourceRows = await db
     .select()
@@ -170,7 +177,8 @@ export default async function InvestigationDetail({
             : "Initial investigation"}
         </p>
         <h2 className="mt-1 font-display text-2xl font-semibold">
-          {branch?.name} · {branch?.branchName}
+          {branch?.business}
+          {branch?.branch ? ` · ${branch.branch}` : ""}
         </h2>
         <p className="mt-2 text-sm font-semibold capitalize">
           {labelResearchStatus(row.status)}
@@ -230,16 +238,16 @@ export default async function InvestigationDetail({
               From Google Maps — reference only, not saved
             </p>
             <GoogleAttribution />
-            <dl className="mt-2 grid gap-2 text-sm sm:grid-cols-2">
-              <div>
-                <dt className="text-muted">Name</dt>
-                <dd>{branch.name}</dd>
-              </div>
-              <div>
-                <dt className="text-muted">Address</dt>
-                <dd>{branch.address}</dd>
-              </div>
-            </dl>
+            {branch.googleMapsUrl ? (
+              <a
+                className="mt-2 inline-block text-sm font-semibold text-accent underline"
+                href={branch.googleMapsUrl}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                View on Google Maps
+              </a>
+            ) : null}
           </div>
           <form
             action={confirmProviderBusinessDetailsAction}

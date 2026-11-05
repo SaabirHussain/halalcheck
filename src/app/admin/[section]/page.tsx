@@ -29,7 +29,10 @@ import {
   labelProposalStatus,
   labelResearchStatus,
 } from "@/lib/labels";
-import { hydrateProviderBranches } from "@/lib/domain/public";
+import {
+  hydrateAdminBranchRows,
+  loadAdminPlaceReferences,
+} from "@/lib/domain/admin-place-references";
 import {
   addSuppressionAdminAction,
   assignUnexpectedReplyAdminAction,
@@ -49,6 +52,7 @@ type AdminRow = {
   detail?: string | null;
   href?: string;
   action?: "draft" | "retry" | "certificate" | "correction";
+  googleMapsUrl?: string | null;
   validFrom?: string | null;
   validUntil?: string | null;
   coversBranch?: boolean | null;
@@ -65,44 +69,6 @@ type AuditRow = {
   actorEmail: string | null;
   metadata: Record<string, string | number | boolean | null>;
 };
-
-type AdminBranchRow = {
-  branchId: string | null;
-  detailsSource: string | null;
-  business: string | null;
-  branch: string | null;
-  address: string | null;
-  city: string | null;
-};
-
-async function hydrateAdminBranchRows<T extends AdminBranchRow>(rows: T[]) {
-  const providerRows = rows.filter(
-    (row) => row.branchId && row.detailsSource === "provider",
-  );
-  const hydrated = providerRows.length
-    ? await hydrateProviderBranches(
-        providerRows.map((row) => ({
-          id: row.branchId!,
-          detailsSource: "provider",
-          name: row.business ?? "",
-          branchName: row.branch ?? "",
-          address: row.address ?? "",
-          city: row.city ?? "",
-          attribution: false,
-        })),
-      )
-    : [];
-  const byBranchId = new Map(hydrated.map((row) => [row.id, row]));
-  return rows.map((row) => {
-    if (row.detailsSource !== "provider" || !row.branchId) return row;
-    const place = byBranchId.get(row.branchId);
-    return {
-      ...row,
-      business: place?.name ?? "Place details unavailable",
-      branch: place?.branchName ?? "",
-    };
-  });
-}
 
 const panel = "rounded-card border border-border bg-surface p-4 shadow-sm";
 const privateMetadataKey =
@@ -166,9 +132,10 @@ export default async function AdminSection({
     );
     rows = branchRows.map((row) => ({
       id: row.id,
-      label: `${row.business} · ${row.branch}`,
+      label: row.branch ? `${row.business} · ${row.branch}` : row.business,
       detail: `${row.kind === "refresh" ? "Refresh investigation" : "Initial investigation"} · ${labelResearchStatus(row.status)}${row.stage ? ` · ${row.stage}` : ""}`,
       href: `/admin/investigations/${row.id}`,
+      googleMapsUrl: row.googleMapsUrl,
     }));
   } else if (section === "proposals") {
     const branchRows = await hydrateAdminBranchRows(
@@ -190,9 +157,10 @@ export default async function AdminSection({
     );
     rows = branchRows.map((row) => ({
       id: row.id,
-      label: `${row.business} · ${row.branch}`,
+      label: row.branch ? `${row.business} · ${row.branch}` : row.business,
       detail: `Proposal status · ${labelProposalStatus(row.status)}`,
       href: `/admin/proposals/${row.id}`,
+      googleMapsUrl: row.googleMapsUrl,
     }));
   } else if (section === "certificates") {
     const branchRows = await hydrateAdminBranchRows(
@@ -224,6 +192,7 @@ export default async function AdminSection({
       label: `${row.business ?? row.branch ?? "Business-level"} · ${row.certifier} · ${row.number ?? "Certificate number unknown"}`,
       detail: `${humanizeLabel(row.status)} · ${row.products.map(humanizeLabel).join(", ")} · valid ${formatAdminDate(row.validFrom)}–${formatAdminDate(row.validUntil)}${row.validUntil && row.validUntil < new Date().toISOString().slice(0, 10) ? " · Expired" : ""}`,
       action: "certificate",
+      googleMapsUrl: row.googleMapsUrl,
       validFrom: row.validFrom,
       validUntil: row.validUntil,
       coversBranch: row.coversBranch,
@@ -302,13 +271,6 @@ export default async function AdminSection({
       .innerJoin(businesses, eq(branches.businessId, businesses.id))
       .where(eq(outreachMessages.status, "draft"))
       .orderBy(desc(outreachMessages.createdAt));
-    const hydratedDrafts = await hydrateAdminBranchRows(drafts);
-    rows = hydratedDrafts.map((row) => ({
-      id: row.id,
-      label: `${row.business} · ${row.branch} · ${labelMessageKind(row.kind)} draft`,
-      detail: `${row.subject}\n${row.bodyText}`,
-      action: "draft",
-    }));
     suppressionRows = await db
       .select()
       .from(suppressions)
@@ -320,25 +282,51 @@ export default async function AdminSection({
         notInArray(unexpectedReplies.reviewStatus, ["dismissed", "assigned"]),
       )
       .orderBy(desc(unexpectedReplies.receivedAt));
+    const threadRowsSource = await db
+      .select({
+        id: outreachThreads.id,
+        branchId: branches.id,
+        detailsSource: branches.detailsSource,
+        address: branches.address,
+        city: branches.city,
+        business: businesses.name,
+        branch: branches.name,
+      })
+      .from(outreachThreads)
+      .innerJoin(branches, eq(outreachThreads.branchId, branches.id))
+      .innerJoin(businesses, eq(branches.businessId, businesses.id))
+      .orderBy(desc(outreachThreads.createdAt));
+    const references = await loadAdminPlaceReferences(
+      [...drafts, ...threadRowsSource].flatMap((row) =>
+        row.detailsSource === "provider" && row.branchId
+          ? [row.branchId]
+          : [],
+      ),
+    );
+    const hydratedDrafts = await hydrateAdminBranchRows(
+      drafts,
+      db,
+      references,
+    );
+    rows = hydratedDrafts.map((row) => ({
+      id: row.id,
+      label: row.branch
+        ? `${row.business} · ${row.branch} · ${labelMessageKind(row.kind)} draft`
+        : `${row.business} · ${labelMessageKind(row.kind)} draft`,
+      detail: `${row.subject}\n${row.bodyText}`,
+      action: "draft",
+      googleMapsUrl: row.googleMapsUrl,
+    }));
     const threadRows = await hydrateAdminBranchRows(
-      await db
-        .select({
-          id: outreachThreads.id,
-          branchId: branches.id,
-          detailsSource: branches.detailsSource,
-          address: branches.address,
-          city: branches.city,
-          business: businesses.name,
-          branch: branches.name,
-        })
-        .from(outreachThreads)
-        .innerJoin(branches, eq(outreachThreads.branchId, branches.id))
-        .innerJoin(businesses, eq(branches.businessId, businesses.id))
-        .orderBy(desc(outreachThreads.createdAt)),
+      threadRowsSource,
+      db,
+      references,
     );
     threadOptions = threadRows.map((thread) => ({
       id: thread.id,
-      label: `${thread.business} · ${thread.branch}`,
+      label: thread.branch
+        ? `${thread.business} · ${thread.branch}`
+        : thread.business,
     }));
   } else if (section === "refresh") {
     const now = new Date();
@@ -411,9 +399,10 @@ export default async function AdminSection({
       )
       .map((row) => ({
         id: row.id,
-        label: `${row.business} · ${row.branch}`,
+        label: row.branch ? `${row.business} · ${row.branch}` : row.business,
         detail: `${labelResearchStatus(row.status)} · Last confirmed ${formatAdminDate(row.lastConfirmedAt)}`,
         href: `/places/${row.id}`,
+        googleMapsUrl: row.googleMapsUrl,
       }));
   }
 
@@ -687,6 +676,16 @@ export default async function AdminSection({
                 ) : (
                   <h3 className="font-semibold">{row.label}</h3>
                 )}
+                {row.googleMapsUrl ? (
+                  <a
+                    className="mt-1 block text-sm font-semibold text-accent underline"
+                    href={row.googleMapsUrl}
+                    rel="noopener noreferrer"
+                    target="_blank"
+                  >
+                    View on Google Maps
+                  </a>
+                ) : null}
                 {row.detail ? (
                   <p className="mt-1 whitespace-pre-wrap break-words text-sm text-muted">
                     {row.detail}
