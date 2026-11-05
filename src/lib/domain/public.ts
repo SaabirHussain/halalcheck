@@ -1,4 +1,14 @@
-import { and, count, desc, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gte,
+  ilike,
+  inArray,
+  lte,
+  or,
+} from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   branches,
@@ -8,27 +18,22 @@ import {
   certifiers,
   investigationSubscriptions,
   investigations,
+  externalPlaceIds,
   publishedRevisions,
   sources,
 } from "@/db/schema";
 import type { BusinessCategory, ResearchStatus } from "@/lib/shared/types";
+import { getPlacesProvider } from "@/lib/providers/places";
+import { consumeGoogleDetailsLimit } from "@/lib/providers/places/limits";
 
 const publicBranchColumns = {
   id: branches.id,
   businessId: businesses.id,
-  name: sql<string>`CASE
-    WHEN ${branches.providerCachedAt} > NOW() - INTERVAL '30 days'
-    THEN COALESCE(${branches.providerName}, ${businesses.name})
-    ELSE ${businesses.name}
-  END`.as("name"),
+  name: businesses.name,
   branchName: branches.name,
   category: businesses.category,
   cuisine: businesses.cuisine,
-  address: sql<string>`CASE
-    WHEN ${branches.providerCachedAt} > NOW() - INTERVAL '30 days'
-    THEN COALESCE(${branches.providerAddress}, ${branches.address})
-    ELSE ${branches.address}
-  END`.as("address"),
+  address: branches.address,
   city: branches.city,
   lat: branches.lat,
   lng: branches.lng,
@@ -40,6 +45,7 @@ const publicBranchColumns = {
   lastReviewedAt: branches.lastReviewedAt,
   lastConfirmedAt: branches.lastConfirmedAt,
   isDemo: branches.isDemo,
+  detailsSource: branches.detailsSource,
 };
 
 export function redactPublicExcerpt(value: string | null) {
@@ -211,6 +217,7 @@ export async function getPublicBranch(
 
   return {
     ...branch,
+    attribution: false,
     latestRevision: revision
       ? { ...revision, snapshot: revision.snapshot }
       : null,
@@ -260,25 +267,113 @@ export type PublicDiscoveryFilters = {
   limit?: number;
 };
 
+type HydratableBranch = {
+  id: string;
+  detailsSource: string;
+  name: string;
+  branchName: string;
+  address: string;
+  city: string;
+  attribution: boolean;
+};
+
+export async function hydrateProviderBranches<T extends HydratableBranch>(
+  rows: readonly T[],
+  database: typeof defaultDb = defaultDb,
+): Promise<T[]> {
+  const providerRows = rows.filter((row) => row.detailsSource === "provider");
+  if (!providerRows.length) return [...rows];
+  const branchIds = providerRows.map((row) => row.id);
+  const placeIds = await database
+    .select({
+      branchId: externalPlaceIds.branchId,
+      provider: externalPlaceIds.provider,
+      externalId: externalPlaceIds.externalId,
+    })
+    .from(externalPlaceIds)
+    .where(inArray(externalPlaceIds.branchId, branchIds));
+  const placeIdByBranch = new Map(
+    placeIds.map((placeId) => [placeId.branchId, placeId]),
+  );
+  const provider = getPlacesProvider();
+  return Promise.all(
+    rows.map(async (row) => {
+      if (row.detailsSource !== "provider") return row;
+      const externalPlace = placeIdByBranch.get(row.id);
+      if (
+        !externalPlace ||
+        (externalPlace.provider === "google" &&
+          !(await consumeGoogleDetailsLimit(database)))
+      ) {
+        return {
+          ...row,
+          name: "Place details unavailable",
+          branchName: "",
+          address: "Place details unavailable",
+          city: "",
+          attribution: externalPlace?.provider === "google",
+        };
+      }
+      try {
+        const details = await provider.getPlace(
+          externalPlace.externalId,
+          "summary",
+        );
+        if (!details) throw new Error("Place details unavailable.");
+        return {
+          ...row,
+          name: details.displayName,
+          branchName: row.branchName || "",
+          address: details.formattedAddress,
+          city: "",
+          attribution: externalPlace.provider === "google",
+        };
+      } catch {
+        return {
+          ...row,
+          name: "Place details unavailable",
+          branchName: "",
+          address: "Place details unavailable",
+          city: "",
+          attribution: externalPlace.provider === "google",
+        };
+      }
+    }),
+  );
+}
+
 export async function listPublicBranches(
   filters: PublicDiscoveryFilters,
   database: typeof defaultDb = defaultDb,
+  providerOverlayIds: ReadonlySet<string> = new Set(),
 ) {
   const where = [];
+  where.push(
+    providerOverlayIds.size
+      ? or(
+          eq(branches.detailsSource, "first_party"),
+          inArray(branches.id, [...providerOverlayIds]),
+        )!
+      : eq(branches.detailsSource, "first_party"),
+  );
   if (filters.category) where.push(eq(businesses.category, filters.category));
   if (filters.status) where.push(eq(branches.researchStatus, filters.status));
   if (filters.q) {
     const term = `%${filters.q}%`;
+    const firstPartyQuery = or(
+      ilike(businesses.name, term),
+      ilike(branches.name, term),
+      ilike(branches.city, term),
+      ilike(branches.address, term),
+      ilike(businesses.cuisine, term),
+    )!;
     where.push(
-      or(
-        ilike(businesses.name, term),
-        ilike(branches.name, term),
-        ilike(branches.city, term),
-        ilike(branches.address, term),
-        ilike(branches.providerName, term),
-        ilike(branches.providerAddress, term),
-        ilike(businesses.cuisine, term),
-      )!,
+      providerOverlayIds.size
+        ? or(
+            firstPartyQuery,
+            inArray(branches.id, [...providerOverlayIds]),
+          )!
+        : firstPartyQuery,
     );
   }
   if (filters.lat != null && filters.lng != null) {
@@ -434,6 +529,7 @@ export async function listPublicBranches(
     }
     return {
       ...row,
+      attribution: false,
       evidenceChips: [...new Set(evidenceChips)].slice(0, 2),
       distanceKm: distanceKm == null ? null : Number(distanceKm.toFixed(1)),
     };

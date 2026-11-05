@@ -1,6 +1,6 @@
 import type { PlacesProvider } from "./types";
 import { demoScenarios } from "@/demo/scenarios";
-import type { PlacesSearch, PlaceResult } from "./types";
+import type { PlaceDetails, PlacesSearch, PlaceResult } from "./types";
 
 export class DemoPlacesProvider implements PlacesProvider {
   async searchNearby(input: PlacesSearch): Promise<PlaceResult[]> {
@@ -27,15 +27,47 @@ export class DemoPlacesProvider implements PlacesProvider {
           lat,
           lng,
           category: scenario.category,
-          ...(scenario.key === "cedar"
-            ? { website: "https://cedar.demo.halalcheck.test/" }
-            : scenario.key === "olive"
-              ? { website: "https://olive.demo.halalcheck.test/" }
-              : {}),
-          attribution: "Fictional HalalCheck demo data",
         },
       ];
     });
+  }
+
+  async getPlace(
+    externalId: string,
+    level: "summary" | "contact",
+  ): Promise<PlaceDetails | null> {
+    const scenarioKey = externalId.startsWith("demo:")
+      ? externalId.slice("demo:".length)
+      : "";
+    const index = demoScenarios.findIndex(
+      (scenario) => scenario.key === scenarioKey,
+    );
+    const scenario = demoScenarios[index];
+    if (!scenario) return null;
+    const details: PlaceDetails = {
+      id: externalId,
+      displayName: scenario.business,
+      formattedAddress: scenario.address,
+      location: {
+        latitude: 43.65 + Math.floor(index / 5) * 0.017,
+        longitude: -79.38 + (index % 5) * 0.015,
+      },
+      types: [
+        scenario.category === "butcher"
+          ? "butcher_shop"
+          : scenario.category === "grocery"
+            ? "grocery_store"
+            : "restaurant",
+      ],
+    };
+    if (level === "contact") {
+      if (scenario.key === "cedar") {
+        details.websiteUri = "https://cedar.demo.halalcheck.test/";
+      } else if (scenario.key === "olive") {
+        details.websiteUri = "https://olive.demo.halalcheck.test/";
+      }
+    }
+    return details;
   }
 }
 

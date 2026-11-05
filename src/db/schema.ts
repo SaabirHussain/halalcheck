@@ -203,6 +203,10 @@ export const outboxPurposeEnum = pgEnum("outbox_purpose", [
   "outreach",
   "notification",
 ]);
+export const branchDetailsSourceEnum = pgEnum("branch_details_source", [
+  "first_party",
+  "provider",
+]);
 
 export const users = pgTable(
   "users",
@@ -273,6 +277,9 @@ export const branches = pgTable(
     providerCachedAt: timestamp("provider_cached_at", { withTimezone: true }),
     providerName: text("provider_name"),
     providerAddress: text("provider_address"),
+    detailsSource: branchDetailsSourceEnum("details_source")
+      .notNull()
+      .default("first_party"),
     ...timestamps,
   },
   (table) => [

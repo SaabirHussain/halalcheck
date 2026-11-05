@@ -164,6 +164,7 @@ export async function createOutreachDraft(
       isActive: investigations.isActive,
       stageDetail: investigations.stageDetail,
       branchName: branches.name,
+      detailsSource: branches.detailsSource,
       businessName: businesses.name,
     })
     .from(investigations)
@@ -173,6 +174,11 @@ export async function createOutreachDraft(
     .limit(1);
   if (!investigation || !investigation.isActive)
     throw new Error("Active investigation not found.");
+  if (investigation.detailsSource === "provider") {
+    throw new Error(
+      "Confirm business details before creating an outreach draft.",
+    );
+  }
 
   const currentClaims = await database
     .select({
@@ -452,8 +458,17 @@ export async function approveOutreachMessage(
   const admin = await requireAdminActor(actor, database);
   await database.transaction(async (tx) => {
     const [draft] = await tx
-      .select({ id: outreachMessages.id, threadId: outreachMessages.threadId })
+      .select({
+        id: outreachMessages.id,
+        threadId: outreachMessages.threadId,
+        detailsSource: branches.detailsSource,
+      })
       .from(outreachMessages)
+      .innerJoin(
+        outreachThreads,
+        eq(outreachMessages.threadId, outreachThreads.id),
+      )
+      .innerJoin(branches, eq(outreachThreads.branchId, branches.id))
       .where(
         and(
           eq(outreachMessages.id, messageId),
@@ -462,6 +477,11 @@ export async function approveOutreachMessage(
       )
       .limit(1);
     if (!draft) throw new Error("Draft message not found or already reviewed.");
+    if (draft.detailsSource === "provider") {
+      throw new Error(
+        "Confirm business details before approving an outreach draft.",
+      );
+    }
     const [thread] = await tx
       .select({ contactEndpointId: outreachThreads.contactEndpointId })
       .from(outreachThreads)

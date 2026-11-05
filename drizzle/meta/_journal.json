@@ -29,6 +29,13 @@
       "when": 1793831746812,
       "tag": "0003_glamorous_starfox",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793892348200,
+      "tag": "0004_sour_maximus",
+      "breakpoints": true
     }
   ]
 }

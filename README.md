@@ -158,9 +158,27 @@ supported variable names; do not add public prefixes to secrets.
 ### Places search
 
 The default `PLACES_PROVIDER=demo` uses fixtures. For Google Places, set
-`PLACES_PROVIDER=google` and `GOOGLE_PLACES_API_KEY` to a restricted server-side
-API key with only the required Places API access. Monitor quotas and billing
-before enabling it; demo mode never calls paid APIs.
+`PLACES_PROVIDER=google` and `GOOGLE_PLACES_API_KEY` to a restricted
+server-side Places API key. Never expose that key in the browser. Set
+`NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` separately for the browser map; restrict it
+by HTTP referrer and enable **Maps JavaScript API**. Set
+`NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID` when using your own map ID; it defaults to
+`DEMO_MAP_ID`. Without a browser Maps key, the map falls back to Leaflet and
+omits provider places.
+
+Search and Place Details calls are capped by
+`GOOGLE_PLACES_SEARCH_DAILY_LIMIT` and `GOOGLE_PLACES_DETAILS_DAILY_LIMIT`
+(both default to 150); searches are also limited to 60 per hour per client IP.
+When Google is selected without an explicit location, the first search uses
+`DISCOVERY_DEFAULT_CENTER=43.6532,-79.3832` (Toronto). The app keeps Google
+place IDs indefinitely and refreshes coordinates within 30 days; names,
+addresses, websites, and phone numbers are fetched live and not saved.
+
+Provider places have no first-party business details initially. Before
+outreach, an administrator must confirm the name, address, city, website,
+phone, and timezone from the business’s own website or signage. Google details
+are shown as reference only; outreach drafting and approval remain blocked
+until confirmation.
 
 ### Geocoding
 

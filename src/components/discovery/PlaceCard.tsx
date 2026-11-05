@@ -6,6 +6,7 @@ import { DemoBadge } from "@/components/ui/DemoBadge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { illustrationForPlace } from "./illustration";
 import type { ResearchStatus } from "@/lib/shared/types";
+import { GoogleAttribution } from "@/components/ui/GoogleAttribution";
 
 export type DiscoveryPlace = {
   id: string;
@@ -21,6 +22,8 @@ export type DiscoveryPlace = {
   imageUrl: string | null;
   lastReviewedAt: string | Date | null;
   isDemo: boolean;
+  detailsSource: "first_party" | "provider";
+  attribution: boolean;
   distanceKm: number | null;
   evidenceChips: string[];
 };
@@ -67,7 +70,11 @@ export function PlaceCard({
       }}
     >
       <Link
-        aria-label={`${place.name}, ${place.branchName}`}
+        aria-label={
+          place.branchName && place.branchName !== place.name
+            ? `${place.name}, ${place.branchName}`
+            : place.name
+        }
         className="group block focus:outline-none"
         href={`/places/${place.id}`}
       >
@@ -86,7 +93,9 @@ export function PlaceCard({
               <h3 className="font-display text-xl font-semibold leading-tight text-ink">
                 {place.name}
               </h3>
-              <p className="mt-1 text-sm text-muted">{place.branchName}</p>
+              {place.branchName && place.branchName !== place.name ? (
+                <p className="mt-1 text-sm text-muted">{place.branchName}</p>
+              ) : null}
             </div>
             {place.isDemo ? <DemoBadge /> : null}
           </div>
@@ -95,8 +104,9 @@ export function PlaceCard({
             {place.cuisine ? ` · ${place.cuisine}` : ""}
           </p>
           <p className="text-sm leading-snug text-ink">
-            {place.address}, {place.city}
+            {place.city ? `${place.address}, ${place.city}` : place.address}
           </p>
+          {place.attribution ? <GoogleAttribution /> : null}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <StatusBadge status={place.researchStatus} />
             {place.distanceKm != null ? (

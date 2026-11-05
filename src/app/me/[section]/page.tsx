@@ -12,7 +12,10 @@ import {
 } from "@/db/schema";
 import { getCurrentUser } from "@/lib/auth/sessions";
 import { notFound } from "next/navigation";
-import { listPublicBranches } from "@/lib/domain/public";
+import {
+  hydrateProviderBranches,
+  listPublicBranches,
+} from "@/lib/domain/public";
 import { PlaceCard } from "@/components/discovery/PlaceCard";
 import { AccountRequestCard } from "@/components/account/AccountRequestCard";
 import {
@@ -48,6 +51,9 @@ export default async function AccountPage({
         businessName: businesses.name,
         branchName: branches.name,
         branchId: branches.id,
+        detailsSource: branches.detailsSource,
+        address: branches.address,
+        city: branches.city,
         status: investigations.status,
         stageDetail: investigations.stageDetail,
         outcome: investigations.outcome,
@@ -62,16 +68,27 @@ export default async function AccountPage({
       .innerJoin(businesses, eq(branches.businessId, businesses.id))
       .where(eq(investigationSubscriptions.userId, user.id))
       .orderBy(desc(investigations.createdAt));
+    const displayRows = await hydrateProviderBranches(
+      rows.map((row) => ({
+        id: row.branchId,
+        detailsSource: row.detailsSource,
+        name: row.businessName,
+        branchName: row.branchName,
+        address: row.address,
+        city: row.city,
+        attribution: false,
+      })),
+    );
     return (
       <main className="mx-auto min-w-0 max-w-5xl px-4 py-8 sm:px-6">
         <AccountNavigation title={title} />
         <div className="mt-6 grid gap-3">
           {rows.length ? (
-            rows.map((row) => (
+            rows.map((row, index) => (
               <AccountRequestCard
                 branchId={row.branchId}
-                branchName={row.branchName}
-                businessName={row.businessName}
+                branchName={displayRows[index]!.branchName}
+                businessName={displayRows[index]!.name}
                 key={row.id}
                 requestedAt={row.requestedAt}
                 outcome={row.outcome}
@@ -97,9 +114,16 @@ export default async function AccountPage({
       .innerJoin(branches, eq(favorites.branchId, branches.id))
       .innerJoin(businesses, eq(branches.businessId, businesses.id))
       .where(eq(favorites.userId, user.id));
-    const places = await listPublicBranches({ limit: 300 });
     const savedIds = new Set(savedRows.map((row) => row.branchId));
-    const savedPlaces = places.filter((place) => savedIds.has(place.id));
+    const places = await listPublicBranches(
+      { limit: 500 },
+      db,
+      savedIds,
+    );
+    const hydratedPlaces = await hydrateProviderBranches(places);
+    const savedPlaces = hydratedPlaces.filter((place) =>
+      savedIds.has(place.id),
+    );
     return (
       <main className="mx-auto min-w-0 max-w-7xl px-4 py-8 sm:px-6">
         <AccountNavigation title={title} />
@@ -134,6 +158,8 @@ export default async function AccountPage({
         link: notifications.link,
         branchName: branches.name,
         businessName: businesses.name,
+        branchId: branches.id,
+        detailsSource: branches.detailsSource,
         createdAt: notifications.createdAt,
         readAt: notifications.readAt,
       })
@@ -142,6 +168,34 @@ export default async function AccountPage({
       .leftJoin(businesses, eq(branches.businessId, businesses.id))
       .where(eq(notifications.userId, user.id))
       .orderBy(desc(notifications.createdAt));
+    const providerNotifications = [
+      ...new Map(
+        rows
+          .filter(
+            (row) => row.branchId && row.detailsSource === "provider",
+          )
+          .map((row) => [row.branchId!, row]),
+      ).values(),
+    ];
+    const hydratedNotificationBranches = providerNotifications.length
+      ? await hydrateProviderBranches(
+          providerNotifications.map((row) => ({
+            id: row.branchId!,
+            detailsSource: "provider",
+            name: row.businessName ?? "",
+            branchName: row.branchName ?? "",
+            address: "",
+            city: "",
+            attribution: false,
+          })),
+        )
+      : [];
+    const notificationNames = new Map(
+      hydratedNotificationBranches.map((row) => [
+        row.id,
+        { businessName: row.name, branchName: row.branchName },
+      ]),
+    );
     return (
       <main className="mx-auto min-w-0 max-w-5xl px-4 py-8 sm:px-6">
         <div className="flex min-w-0 flex-wrap items-end justify-between gap-3">
@@ -155,7 +209,12 @@ export default async function AccountPage({
             rows.map((notification) => (
               <NotificationCard
                 key={notification.id}
-                notification={notification}
+                notification={{
+                  ...notification,
+                  ...(notification.branchId
+                    ? notificationNames.get(notification.branchId)
+                    : {}),
+                }}
               />
             ))
           ) : (

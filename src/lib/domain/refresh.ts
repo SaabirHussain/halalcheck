@@ -1,13 +1,30 @@
-import { and, eq, gte, inArray, isNotNull, lt, lte } from "drizzle-orm";
+import {
+  and,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
+  branchFollows,
   branches,
   certificates,
   corrections,
+  externalPlaceIds,
+  favorites,
   investigations,
   jobRuns,
 } from "@/db/schema";
 import type { JobQueue } from "@/lib/jobs/types";
+import { getPlacesProvider } from "@/lib/providers/places";
+import type { PlacesProvider } from "@/lib/providers/places";
+import { consumeGoogleDetailsLimit } from "@/lib/providers/places/limits";
 import type { Actor } from "./actor";
 import { stageQueue } from "./investigations";
 
@@ -122,24 +139,72 @@ export async function refreshScan(
 export async function purgeExpiredProviderCache(
   database: Database = defaultDb,
   now = new Date(),
+  provider: PlacesProvider = getPlacesProvider(),
 ) {
   const expiry = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  const removed = await database
-    .update(branches)
-    .set({
-      providerName: null,
-      providerAddress: null,
-      providerCachedAt: null,
-      updatedAt: now,
+  const staleBranches = await database
+    .select({
+      id: branches.id,
+      detailsSource: branches.detailsSource,
+      provider: externalPlaceIds.provider,
+      externalId: externalPlaceIds.externalId,
+      hasUserState: sql<boolean>`(
+        EXISTS (SELECT 1 FROM ${investigations} WHERE ${investigations.branchId} = ${branches.id})
+        OR EXISTS (SELECT 1 FROM ${branchFollows} WHERE ${branchFollows.branchId} = ${branches.id})
+        OR EXISTS (SELECT 1 FROM ${favorites} WHERE ${favorites.branchId} = ${branches.id})
+      )`,
     })
+    .from(branches)
+    .leftJoin(externalPlaceIds, eq(externalPlaceIds.branchId, branches.id))
     .where(
-      and(
-        isNotNull(branches.providerCachedAt),
+      or(
+        and(
+          eq(branches.detailsSource, "provider"),
+          isNull(branches.providerCachedAt),
+        ),
         lt(branches.providerCachedAt, expiry),
       ),
-    )
-    .returning({ id: branches.id });
-  return removed.length;
+    );
+  let removed = 0;
+  for (const branch of staleBranches) {
+    if (
+      branch.detailsSource === "provider" &&
+      !branch.hasUserState
+    ) {
+      await database.delete(branches).where(eq(branches.id, branch.id));
+      removed++;
+      continue;
+    }
+    try {
+      if (!branch.externalId) throw new Error("Provider place ID missing.");
+      if (
+        branch.provider === "google" &&
+        !(await consumeGoogleDetailsLimit(database, now))
+      ) {
+        throw new Error("Google Places details limit reached.");
+      }
+      const details = await provider.getPlace(branch.externalId, "summary");
+      if (!details) throw new Error("Provider place details unavailable.");
+      await database
+        .update(branches)
+        .set({
+          lat: details.location.latitude,
+          lng: details.location.longitude,
+          providerCachedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(branches.id, branch.id));
+    } catch {
+      await database
+        .update(branches)
+        .set({ lat: 0, lng: 0, providerCachedAt: null, updatedAt: now })
+        .where(eq(branches.id, branch.id));
+      console.warn(
+        `Provider place cache refresh failed for branch ${branch.id}; stale coordinates cleared.`,
+      );
+    }
+  }
+  return removed;
 }
 
 export async function reconcileInvestigations(

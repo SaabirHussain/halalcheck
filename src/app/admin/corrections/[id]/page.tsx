@@ -11,6 +11,8 @@ import {
   reviewCorrectionAdminAction,
 } from "@/app/admin/actions";
 import { formatAdminDateTime, humanizeLabel } from "@/lib/labels";
+import { hydrateProviderBranches } from "@/lib/domain/public";
+import { GoogleAttribution } from "@/components/ui/GoogleAttribution";
 
 export default async function CorrectionDetail({
   params,
@@ -28,8 +30,11 @@ export default async function CorrectionDetail({
       adminNote: corrections.adminNote,
       createdAt: corrections.createdAt,
       branchId: branches.id,
+      detailsSource: branches.detailsSource,
       branchName: branches.name,
       businessName: businesses.name,
+      address: branches.address,
+      city: branches.city,
       evidenceId: evidenceDocuments.id,
       filename: evidenceDocuments.originalFilename,
       mime: evidenceDocuments.mime,
@@ -48,6 +53,17 @@ export default async function CorrectionDetail({
   if (!correction) {
     return <p className="text-muted">Correction not found.</p>;
   }
+  const [place] = await hydrateProviderBranches([
+    {
+      id: correction.branchId,
+      detailsSource: correction.detailsSource,
+      name: correction.businessName,
+      branchName: correction.branchName,
+      address: correction.address,
+      city: correction.city,
+      attribution: false,
+    },
+  ]);
 
   return (
     <section className="grid min-w-0 gap-5">
@@ -58,8 +74,13 @@ export default async function CorrectionDetail({
             : "Community correction"}
         </p>
         <h2 className="mt-1 break-words font-display text-2xl font-semibold">
-          {correction.businessName} · {correction.branchName}
+          {place!.name} · {place!.branchName}
         </h2>
+        {place!.attribution ? (
+          <div className="mt-2">
+            <GoogleAttribution />
+          </div>
+        ) : null}
         <p className="mt-2 text-sm text-muted">
           {humanizeLabel(correction.status)} · submitted{" "}
           {formatAdminDateTime(correction.createdAt)}

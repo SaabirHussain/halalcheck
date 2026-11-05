@@ -1,6 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import { notFound } from "next/navigation";
-import { getPublicBranch } from "@/lib/domain/public";
+import {
+  getPublicBranch,
+  hydrateProviderBranches,
+} from "@/lib/domain/public";
 import { getCurrentUser } from "@/lib/auth/sessions";
 import { db } from "@/db";
 import { favorites, investigationSubscriptions } from "@/db/schema";
@@ -12,11 +15,12 @@ export default async function PlacePage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [place, user] = await Promise.all([
+  const [publicPlace, user] = await Promise.all([
     getPublicBranch(id),
     getCurrentUser(),
   ]);
-  if (!place) notFound();
+  if (!publicPlace) notFound();
+  const [place] = await hydrateProviderBranches([publicPlace]);
   const active = place.activeInvestigation;
   const [saved, subscription] = user
     ? await Promise.all([

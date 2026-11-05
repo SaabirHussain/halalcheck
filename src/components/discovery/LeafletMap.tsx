@@ -11,19 +11,12 @@ import { useEffect } from "react";
 import Link from "next/link";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import type { DiscoveryPlace } from "./PlaceCard";
+import { markerColor } from "./map-utils";
 
 const fallbackCenter: [number, number] = [43.65, -79.38];
 const tileUrl =
   process.env.NEXT_PUBLIC_MAP_TILE_URL ??
   "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
-
-function markerColor(status: DiscoveryPlace["researchStatus"]) {
-  if (status === "findings_published") return "#1F5C3F";
-  if (status === "needs_refresh" || status === "unable_to_confirm")
-    return "#B45309";
-  if (status === "not_researched") return "#6B665D";
-  return "#1D4E89";
-}
 
 function MapViewport({ center }: { center: [number, number] }) {
   const map = useMap();
@@ -65,6 +58,9 @@ export function LeafletMap({
   className?: string;
 }) {
   const mapCenter = center ?? fallbackCenter;
+  const mapPlaces = places.filter(
+    (place) => place.detailsSource !== "provider",
+  );
 
   return (
     <div
@@ -82,7 +78,7 @@ export function LeafletMap({
           maxZoom={19}
           url={tileUrl}
         />
-        {places.map((place) => {
+        {mapPlaces.map((place) => {
           const color = markerColor(place.researchStatus);
           const active = highlightedId === place.id;
           return (

@@ -16,6 +16,19 @@ const LeafletMap = dynamic(
     ),
   },
 );
+const GoogleMap = dynamic(
+  () => import("./GoogleMap").then((module) => module.GoogleMap),
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        aria-label="Loading map"
+        className="min-h-80 animate-pulse rounded-card bg-surface-2"
+        role="status"
+      />
+    ),
+  },
+);
 
 export function MapLoader({
   places,
@@ -30,13 +43,25 @@ export function MapLoader({
   center?: [number, number];
   className?: string;
 }) {
+  const googleMapsKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+  if (googleMapsKey) {
+    return (
+      <GoogleMap
+        center={center}
+        className={className}
+        highlightedId={highlightedId}
+        onHighlight={onHighlight}
+        places={places}
+      />
+    );
+  }
   return (
     <LeafletMap
       center={center}
       className={className}
       highlightedId={highlightedId}
       onHighlight={onHighlight}
-      places={places}
+      places={places.filter((place) => place.detailsSource !== "provider")}
     />
   );
 }

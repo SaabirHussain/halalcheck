@@ -35,6 +35,7 @@ import { buildJobHandlers } from "@/worker/handlers";
 import {
   addContactEndpoint,
   assignUnexpectedReply,
+  confirmProviderBusinessDetails,
   convertCorrectionToRefresh,
   dismissUnexpectedReply,
   editOutreachDraft,
@@ -74,6 +75,28 @@ export async function resumeInvestigationAction(form: FormData) {
     db,
   );
   revalidatePath("/admin");
+}
+
+export async function confirmProviderBusinessDetailsAction(form: FormData) {
+  const user = await requireAdmin();
+  const investigationId = String(form.get("investigationId") ?? "");
+  const branchId = String(form.get("branchId") ?? "");
+  await confirmProviderBusinessDetails(
+    actorFor(user),
+    {
+      branchId,
+      name: String(form.get("name") ?? ""),
+      address: String(form.get("address") ?? ""),
+      city: String(form.get("city") ?? ""),
+      website: String(form.get("website") ?? ""),
+      phone: String(form.get("phone") ?? ""),
+      timezone: String(form.get("timezone") ?? "America/Toronto"),
+    },
+    await getRuntimeQueue(),
+    db,
+  );
+  revalidatePath(`/admin/investigations/${investigationId}`);
+  revalidatePath(`/places/${branchId}`);
 }
 
 export async function cancelInvestigationAction(form: FormData) {
