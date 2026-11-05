@@ -1851,6 +1851,137 @@ describe("AI, prompt injection, and SSRF defenses", () => {
     ).toBe(true);
   });
 
+  it("drops invalid public claims while keeping grounded valid claims", async () => {
+    const pages = [
+      {
+        url: "https://business.example.test/",
+        title: "Chicken supplier",
+        text: "Chicken supplier: Green Valley Poultry.",
+      },
+    ];
+    const validClaim = {
+      product: "chicken",
+      attribute: "supplier",
+      value: "Green Valley Poultry",
+      valueEnum: null,
+      evidenceCategory: "public_website",
+      confirmedAt: null,
+      excerpt: "Chicken supplier: Green Valley Poultry.",
+    };
+    const response = {
+      claims: [
+        { ...validClaim, product: "invalid_product" },
+        validClaim,
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(response) } }],
+          }),
+        ),
+      ),
+    );
+    try {
+      const provider = new OpenAICompatibleProvider(
+        "https://ai.example.test/v1",
+        "test-key",
+        "test-model",
+      );
+      await expect(provider.extractPublicClaims(pages)).resolves.toEqual([
+        validClaim,
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("returns no public claims for an invalid response envelope", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              { message: { content: JSON.stringify({ unexpected: "value" }) } },
+            ],
+          }),
+        ),
+      ),
+    );
+    try {
+      const provider = new OpenAICompatibleProvider(
+        "https://ai.example.test/v1",
+        "test-key",
+        "test-model",
+      );
+      await expect(
+        provider.extractPublicClaims([
+          {
+            url: "https://business.example.test/",
+            title: "Page",
+            text: "Grounded page text.",
+          },
+        ]),
+      ).resolves.toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("drops invalid reply answers and defaults invalid top-level fields", async () => {
+    const text = "Our chicken supplier is Green Valley Poultry.";
+    const validAnswer = {
+      questionKey: "chicken_supplier",
+      product: "chicken",
+      attribute: "supplier",
+      value: "Green Valley Poultry",
+      valueEnum: null,
+      specificity: "specific",
+      excerpt: text,
+    };
+    const response = {
+      answers: [
+        { ...validAnswer, product: "invalid_product" },
+        validAnswer,
+      ],
+      optOut: true,
+      refusal: true,
+      staffDontKnow: "not a boolean",
+      vagueSignals: ["referral"],
+      referral: { name: "Maya", email: "maya@example.test" },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(response) } }],
+          }),
+        ),
+      ),
+    );
+    try {
+      const provider = new OpenAICompatibleProvider(
+        "https://ai.example.test/v1",
+        "test-key",
+        "test-model",
+      );
+      await expect(provider.parseReply(text, [])).resolves.toEqual({
+        answers: [validAnswer],
+        optOut: true,
+        refusal: true,
+        staffDontKnow: false,
+        vagueSignals: ["referral"],
+        referral: { name: "Maya", email: "maya@example.test" },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("scopes reply answers by product and preserves exact excerpts", async () => {
     const parser = new DemoAIProvider();
     const clarification =
