@@ -42,6 +42,7 @@ import {
   certifiers,
   rateLimits,
   webhookEvents,
+  externalPlaceIds,
 } from "@/db/schema";
 import { requestResearch } from "@/lib/domain/research-requests";
 import {
@@ -66,7 +67,12 @@ import {
 import { publishProposedUpdate } from "@/lib/domain/publishing";
 import { notifyFollowers } from "@/lib/domain/notifications";
 import { getPublicBranch, listPublicBranches } from "@/lib/domain/public";
-import { refreshScan } from "@/lib/domain/refresh";
+import {
+  purgeExpiredProviderCache,
+  refreshScan,
+} from "@/lib/domain/refresh";
+import { searchAndCacheProviderPlaces } from "@/lib/domain/provider-places";
+import { confirmProviderBusinessDetails } from "@/lib/domain/admin";
 import { DemoAIProvider } from "@/lib/providers/ai/demo";
 import {
   OpenAICompatibleProvider,
@@ -244,6 +250,293 @@ describe("public discovery", () => {
     expect(distances).toEqual(
       [...distances].sort((a, b) => (a ?? 0) - (b ?? 0)),
     );
+  });
+
+  it("keeps provider details transient and filters provider rows without an overlay", async () => {
+    const provider = {
+      async searchNearby() {
+        return [
+          {
+            provider: "google",
+            externalId: "google-place-1",
+            name: "Live Place Name",
+            address: "10 Live Street",
+            lat: 43.65,
+            lng: -79.38,
+            category: "restaurant" as const,
+          },
+        ];
+      },
+      async getPlace() {
+        return null;
+      },
+    };
+    const result = await searchAndCacheProviderPlaces(
+      { lat: 43.65, lng: -79.38, radiusKm: 20 },
+      "203.0.113.4",
+      database,
+      new Date(),
+      provider,
+    );
+    const [stored] = await database
+      .select({
+        id: branches.id,
+        name: branches.name,
+        address: branches.address,
+        city: branches.city,
+        phone: branches.phone,
+        website: branches.website,
+      })
+      .from(branches)
+      .innerJoin(externalPlaceIds, eq(externalPlaceIds.branchId, branches.id))
+      .where(eq(externalPlaceIds.externalId, "google-place-1"));
+    expect(stored).toMatchObject({
+      name: "",
+      address: "",
+      city: "",
+      phone: null,
+      website: null,
+    });
+    expect(
+      await listPublicBranches({ limit: 200 }, database),
+    ).toHaveLength(0);
+    const visible = await listPublicBranches(
+      { limit: 200 },
+      database,
+      new Set(result.overlay.keys()),
+    );
+    expect(visible).toHaveLength(1);
+    expect(result.overlay.get(stored!.id)).toMatchObject({
+      name: "Live Place Name",
+      address: "10 Live Street",
+    });
+  });
+
+  it("returns first-party results with a notice after the Google search cap", async () => {
+    const { branch } = await createBranch();
+    const originalProvider = process.env.PLACES_PROVIDER;
+    const originalKey = process.env.GOOGLE_PLACES_API_KEY;
+    const now = new Date();
+    process.env.PLACES_PROVIDER = "google";
+    process.env.GOOGLE_PLACES_API_KEY = "stub-key";
+    try {
+      await database.insert(rateLimits).values({
+        key: `google:search:${now.toISOString().slice(0, 10)}`,
+        windowStart: new Date(
+          Math.floor(now.getTime() / (24 * 60 * 60 * 1000)) *
+            24 *
+            60 *
+            60 *
+            1000,
+        ),
+        count: 150,
+      });
+      const result = await searchAndCacheProviderPlaces(
+        { lat: 43.65, lng: -79.38, radiusKm: 20 },
+        "203.0.113.5",
+        database,
+        now,
+        {
+          async searchNearby() {
+            throw new Error("Search should be capped.");
+          },
+          async getPlace() {
+            return null;
+          },
+        },
+      );
+      expect(result.notice).toBeTruthy();
+      expect(result.overlay.size).toBe(0);
+      expect(
+        (await listPublicBranches(result.filters, database)).map(
+          (place) => place.id,
+        ),
+      ).toContain(branch.id);
+    } finally {
+      if (originalProvider === undefined) delete process.env.PLACES_PROVIDER;
+      else process.env.PLACES_PROVIDER = originalProvider;
+      if (originalKey === undefined)
+        delete process.env.GOOGLE_PLACES_API_KEY;
+      else process.env.GOOGLE_PLACES_API_KEY = originalKey;
+    }
+  });
+
+  it("uses the configured Toronto center for a no-location Google search", async () => {
+    const originalProvider = process.env.PLACES_PROVIDER;
+    const originalKey = process.env.GOOGLE_PLACES_API_KEY;
+    const originalCenter = process.env.DISCOVERY_DEFAULT_CENTER;
+    process.env.PLACES_PROVIDER = "google";
+    process.env.GOOGLE_PLACES_API_KEY = "";
+    process.env.DISCOVERY_DEFAULT_CENTER = "43.6532,-79.3832";
+    let received: { lat: number; lng: number } | undefined;
+    try {
+      const result = await searchAndCacheProviderPlaces(
+        { radiusKm: 20 },
+        "203.0.113.6",
+        database,
+        new Date(),
+        {
+          async searchNearby(input) {
+            received = { lat: input.lat, lng: input.lng };
+            return [];
+          },
+          async getPlace() {
+            return null;
+          },
+        },
+      );
+      expect(result.filters).toMatchObject({
+        lat: 43.6532,
+        lng: -79.3832,
+      });
+      expect(received).toEqual({ lat: 43.6532, lng: -79.3832 });
+    } finally {
+      if (originalProvider === undefined) delete process.env.PLACES_PROVIDER;
+      else process.env.PLACES_PROVIDER = originalProvider;
+      if (originalKey === undefined)
+        delete process.env.GOOGLE_PLACES_API_KEY;
+      else process.env.GOOGLE_PLACES_API_KEY = originalKey;
+      if (originalCenter === undefined)
+        delete process.env.DISCOVERY_DEFAULT_CENTER;
+      else process.env.DISCOVERY_DEFAULT_CENTER = originalCenter;
+    }
+  });
+
+  it("deletes stale provider branches without state and refreshes followed locations", async () => {
+    const now = new Date("2025-11-10T12:00:00.000Z");
+    const staleAt = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
+    const unreferenced = await createBranch();
+    const followed = await createBranch();
+    const follower = await createUser();
+    for (const branch of [unreferenced.branch, followed.branch]) {
+      await database
+        .update(branches)
+        .set({
+          detailsSource: "provider",
+          name: "",
+          address: "",
+          city: "",
+          phone: null,
+          website: null,
+          providerCachedAt: staleAt,
+        })
+        .where(eq(branches.id, branch.id));
+      await database.insert(externalPlaceIds).values({
+        branchId: branch.id,
+        provider: "demo",
+        externalId: `demo:${branch.id}`,
+      });
+    }
+    await database
+      .insert(branchFollows)
+      .values({ branchId: followed.branch.id, userId: follower.id });
+    const removed = await purgeExpiredProviderCache(database, now, {
+      async searchNearby() {
+        return [];
+      },
+      async getPlace() {
+        return {
+          id: "refreshed",
+          displayName: "Transient",
+          formattedAddress: "Transient address",
+          location: { latitude: 43.66, longitude: -79.4 },
+          types: ["restaurant"],
+        };
+      },
+    });
+    expect(removed).toBe(1);
+    expect(
+      await database
+        .select()
+        .from(branches)
+        .where(eq(branches.id, unreferenced.branch.id)),
+    ).toHaveLength(0);
+    const [refreshed] = await database
+      .select()
+      .from(branches)
+      .where(eq(branches.id, followed.branch.id));
+    expect(refreshed).toMatchObject({
+      lat: 43.66,
+      lng: -79.4,
+      detailsSource: "provider",
+      name: "",
+      address: "",
+      city: "",
+      website: null,
+      phone: null,
+    });
+    expect(refreshed!.providerCachedAt).toEqual(now);
+  });
+});
+
+describe("provider business detail confirmation", () => {
+  it("blocks provider outreach and resumes a waiting investigation on confirmation", async () => {
+    const admin = await createUser("admin");
+    const { business, branch } = await createBranch();
+    await database
+      .update(branches)
+      .set({
+        detailsSource: "provider",
+        name: "",
+        address: "",
+        city: "",
+        website: null,
+        phone: null,
+      })
+      .where(eq(branches.id, branch.id));
+    await database
+      .update(businesses)
+      .set({ name: "", website: null })
+      .where(eq(businesses.id, business.id));
+    const [investigation] = await database
+      .insert(investigations)
+      .values({
+        branchId: branch.id,
+        stageDetail:
+          "Waiting for an administrator to confirm business details before contacting the business.",
+        paused: true,
+      })
+      .returning();
+    const { queue, calls } = queueRecorder();
+    await expect(
+      createOutreachDraft(
+        { type: "worker" },
+        investigation!.id,
+        database,
+        queue,
+      ),
+    ).rejects.toThrow("Confirm business details");
+    const result = await confirmProviderBusinessDetails(
+      { type: "admin", userId: admin.id },
+      {
+        branchId: branch.id,
+        name: "Confirmed Business",
+        address: "10 First-party Street",
+        city: "Toronto",
+        website: "https://business.example/",
+        phone: "",
+        timezone: "America/Toronto",
+      },
+      queue,
+      database,
+    );
+    expect(result.resumedInvestigationId).toBe(investigation!.id);
+    const [confirmed] = await database
+      .select()
+      .from(branches)
+      .where(eq(branches.id, branch.id));
+    expect(confirmed).toMatchObject({
+      detailsSource: "first_party",
+      name: "Confirmed Business",
+      address: "10 First-party Street",
+      city: "Toronto",
+      website: "https://business.example/",
+    });
+    expect(calls).toContainEqual({
+      name: "investigation.prepare_outreach",
+      payload: { investigationId: investigation!.id },
+    });
+    expect(await database.select().from(auditEvents)).toHaveLength(1);
   });
 });
 
@@ -2169,6 +2462,67 @@ describe("publication notifications and fixture coverage", () => {
       .where(eq(investigations.id, investigation.id));
     expect(updated!.budgetFetchesUsed).toBeLessThanOrEqual(8);
     expect(updated!.budgetFetchesUsed).toBeGreaterThanOrEqual(3);
+  });
+
+  it("uses a transient provider website and waits for business confirmation", async () => {
+    const originalProvider = process.env.PLACES_PROVIDER;
+    process.env.PLACES_PROVIDER = "demo";
+    try {
+      const { business, branch } = await createBranch({
+        businessName: "",
+        branchName: "",
+      });
+      await database
+        .update(branches)
+        .set({
+          detailsSource: "provider",
+          name: "",
+          address: "",
+          city: "",
+          website: null,
+        })
+        .where(eq(branches.id, branch.id));
+      await database
+        .update(businesses)
+        .set({ name: "", website: null })
+        .where(eq(businesses.id, business.id));
+      await database.insert(externalPlaceIds).values({
+        branchId: branch.id,
+        provider: "demo",
+        externalId: "demo:cedar",
+      });
+      const investigation = await createInvestigation(branch.id);
+      const { queue } = queueRecorder();
+      const handler = buildJobHandlers(database, queue)[
+        "investigation.public_research"
+      ]!;
+      await handler(
+        { investigationId: investigation.id },
+        { jobId: "provider-research", attempt: 1 },
+      );
+      const [updatedInvestigation] = await database
+        .select()
+        .from(investigations)
+        .where(eq(investigations.id, investigation.id));
+      const [updatedBranch] = await database
+        .select()
+        .from(branches)
+        .where(eq(branches.id, branch.id));
+      const [updatedBusiness] = await database
+        .select()
+        .from(businesses)
+        .where(eq(businesses.id, business.id));
+      expect(updatedInvestigation).toMatchObject({
+        paused: true,
+        stageDetail:
+          "Waiting for an administrator to confirm business details before contacting the business.",
+      });
+      expect(updatedBranch!.website).toBeNull();
+      expect(updatedBusiness!.website).toBeNull();
+    } finally {
+      if (originalProvider === undefined) delete process.env.PLACES_PROVIDER;
+      else process.env.PLACES_PROVIDER = originalProvider;
+    }
   });
 });
 

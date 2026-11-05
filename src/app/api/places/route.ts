@@ -1,14 +1,10 @@
 import { NextResponse } from "next/server";
-import { and, eq } from "drizzle-orm";
-import { randomUUID } from "node:crypto";
-import { z } from "zod";
 import { db } from "@/db";
-import { branches, businesses, externalPlaceIds } from "@/db/schema";
 import { listPublicBranches } from "@/lib/domain/public";
-import { purgeExpiredProviderCache } from "@/lib/domain/refresh";
-import { getPlacesProvider } from "@/lib/providers/places";
-import type { PlaceResult } from "@/lib/providers/places";
+import { searchAndCacheProviderPlaces } from "@/lib/domain/provider-places";
+import { getClientIp } from "@/lib/http/client-ip";
 import { businessCategories, researchStatuses } from "@/lib/shared/types";
+import { z } from "zod";
 
 const numberValue = z.coerce.number().finite();
 const querySchema = z.object({
@@ -55,24 +51,31 @@ export async function GET(request: Request) {
   };
 
   try {
-    if (filters.lat != null && filters.lng != null) {
-      await purgeExpiredProviderCache(db);
-      const placeResults = await getPlacesProvider().searchNearby({
-        lat: filters.lat,
-        lng: filters.lng,
-        radiusKm: filters.radiusKm,
-        category: filters.category,
-        query: filters.q,
-      });
-      for (const place of placeResults) await cachePlace(place);
-    }
-    const results = await listPublicBranches(filters, db);
+    const providerSearch = await searchAndCacheProviderPlaces(
+      filters,
+      getClientIp(request.headers),
+      db,
+    );
+    const rows = await listPublicBranches(
+      providerSearch.filters,
+      db,
+      new Set(providerSearch.overlay.keys()),
+    );
+    const results = rows.map((row) => {
+      const livePlace = providerSearch.overlay.get(row.id);
+      if (row.detailsSource !== "provider" || !livePlace) {
+        return { ...row, attribution: false };
+      }
+      return {
+        ...row,
+        name: livePlace.name,
+        address: livePlace.address,
+        attribution: livePlace.provider === "google",
+      };
+    });
     return NextResponse.json({
       results,
-      attribution:
-        process.env.PLACES_PROVIDER === "google"
-          ? "Powered by Google"
-          : "Demo places data",
+      ...(providerSearch.notice ? { notice: providerSearch.notice } : {}),
     });
   } catch {
     return NextResponse.json(
@@ -80,76 +83,4 @@ export async function GET(request: Request) {
       { status: 502 },
     );
   }
-}
-
-async function cachePlace(place: PlaceResult) {
-  const existing = await db
-    .select({
-      branchId: externalPlaceIds.branchId,
-      businessId: branches.businessId,
-    })
-    .from(externalPlaceIds)
-    .innerJoin(branches, eq(externalPlaceIds.branchId, branches.id))
-    .where(
-      and(
-        eq(externalPlaceIds.provider, place.provider),
-        eq(externalPlaceIds.externalId, place.externalId),
-      ),
-    )
-    .limit(1);
-  if (existing[0]) {
-    await db
-      .update(branches)
-      .set({
-        providerName: place.name,
-        providerAddress: place.address,
-        providerCachedAt: new Date(),
-        lat: place.lat,
-        lng: place.lng,
-        updatedAt: new Date(),
-      })
-      .where(eq(branches.id, existing[0].branchId));
-    return;
-  }
-
-  const businessId = randomUUID();
-  const branchId = randomUUID();
-  await db
-    .insert(businesses)
-    .values({
-      id: businessId,
-      name: "Nearby business",
-      category: place.category,
-      website: null,
-      isDemo: place.provider === "demo",
-    })
-    .onConflictDoNothing();
-  await db
-    .insert(branches)
-    .values({
-      id: branchId,
-      businessId,
-      name: "Nearby",
-      address: "Address not available",
-      city: "Nearby",
-      lat: place.lat,
-      lng: place.lng,
-      phone: null,
-      website: null,
-      timezone: "UTC",
-      researchStatus: "not_researched",
-      providerName: place.name,
-      providerAddress: place.address,
-      providerCachedAt: new Date(),
-      isDemo: place.provider === "demo",
-    })
-    .onConflictDoNothing();
-  await db
-    .insert(externalPlaceIds)
-    .values({
-      branchId,
-      provider: place.provider,
-      externalId: place.externalId,
-    })
-    .onConflictDoNothing();
 }

@@ -7,6 +7,7 @@ import { illustrationForPlace } from "@/components/discovery/illustration";
 import type { DiscoveryPlace } from "@/components/discovery/PlaceCard";
 import { PlaceActions } from "./PlaceActions";
 import { PlaceMap } from "./PlaceMap";
+import { GoogleAttribution } from "@/components/ui/GoogleAttribution";
 
 type Place = NonNullable<Awaited<ReturnType<typeof getPublicBranch>>>;
 type PublicClaim = Place["claims"][number];
@@ -198,6 +199,8 @@ export function PlacePageContent({
     imageUrl: place.imageUrl,
     lastReviewedAt: place.lastReviewedAt,
     isDemo: place.isDemo,
+    detailsSource: place.detailsSource,
+    attribution: place.attribution,
     distanceKm: null,
     evidenceChips: [],
   };
@@ -229,15 +232,21 @@ export function PlacePageContent({
             </p>
           ) : null}
           <p className="text-sm font-semibold text-accent">
-            {place.branchName} · {place.category}
+            {place.branchName && place.branchName !== place.name
+              ? `${place.branchName} · `
+              : ""}
+            {place.category}
             {place.cuisine ? ` · ${place.cuisine}` : ""}
           </p>
           <h1 className="font-display text-4xl font-semibold leading-tight sm:text-5xl">
-            {place.name}
+            {place.detailsSource === "provider" && !place.name
+              ? "Place details unavailable"
+              : place.name}
           </h1>
           <p className="text-sm text-muted">
-            {place.address}, {place.city}
+            {place.city ? `${place.address}, ${place.city}` : place.address}
           </p>
+          {place.attribution ? <GoogleAttribution /> : null}
           <p className="text-sm text-muted">
             {place.lastReviewedAt
               ? `Reviewed ${displayDate(place.lastReviewedAt)}`

@@ -66,9 +66,11 @@ function toSearchParams(filters: DiscoveryFilterState) {
 export function DiscoveryExplorer({
   places,
   initialFilters,
+  notice,
 }: {
   places: DiscoveryPlace[];
   initialFilters: DiscoveryFilterState;
+  notice?: string;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -397,6 +399,15 @@ export function DiscoveryExplorer({
           </button>
         ) : null}
       </div>
+
+      {notice ? (
+        <p
+          className="mb-4 rounded-lg border border-warn/20 bg-warn-soft px-3 py-2 text-sm text-warn"
+          role="status"
+        >
+          {notice}
+        </p>
+      ) : null}
 
       {places.length === 0 ? (
         <div className="rounded-card border border-dashed border-border bg-surface p-8 text-center">

@@ -5,17 +5,33 @@ export function SiteFooter() {
         HalalCheck organises evidence; it does not issue religious rulings.
         Unknown information is not a negative finding.
       </p>
-      <p>
-        Map data ©{" "}
+      {!process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ? (
+        <p>
+          Map data ©{" "}
+          <a
+            className="underline underline-offset-2 hover:text-accent"
+            href="https://www.openstreetmap.org/copyright"
+            rel="noreferrer"
+            target="_blank"
+          >
+            OpenStreetMap contributors
+          </a>
+          .
+        </p>
+      ) : null}
+      <p className="flex justify-center gap-4">
         <a
           className="underline underline-offset-2 hover:text-accent"
-          href="https://www.openstreetmap.org/copyright"
-          rel="noreferrer"
-          target="_blank"
+          href="/terms"
         >
-          OpenStreetMap contributors
+          Terms of Use
         </a>
-        .
+        <a
+          className="underline underline-offset-2 hover:text-accent"
+          href="/privacy"
+        >
+          Privacy Policy
+        </a>
       </p>
     </footer>
   );

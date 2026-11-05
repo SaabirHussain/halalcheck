@@ -29,6 +29,7 @@ import {
   labelProposalStatus,
   labelResearchStatus,
 } from "@/lib/labels";
+import { hydrateProviderBranches } from "@/lib/domain/public";
 import {
   addSuppressionAdminAction,
   assignUnexpectedReplyAdminAction,
@@ -65,6 +66,44 @@ type AuditRow = {
   metadata: Record<string, string | number | boolean | null>;
 };
 
+type AdminBranchRow = {
+  branchId: string | null;
+  detailsSource: string | null;
+  business: string | null;
+  branch: string | null;
+  address: string | null;
+  city: string | null;
+};
+
+async function hydrateAdminBranchRows<T extends AdminBranchRow>(rows: T[]) {
+  const providerRows = rows.filter(
+    (row) => row.branchId && row.detailsSource === "provider",
+  );
+  const hydrated = providerRows.length
+    ? await hydrateProviderBranches(
+        providerRows.map((row) => ({
+          id: row.branchId!,
+          detailsSource: "provider",
+          name: row.business ?? "",
+          branchName: row.branch ?? "",
+          address: row.address ?? "",
+          city: row.city ?? "",
+          attribution: false,
+        })),
+      )
+    : [];
+  const byBranchId = new Map(hydrated.map((row) => [row.id, row]));
+  return rows.map((row) => {
+    if (row.detailsSource !== "provider" || !row.branchId) return row;
+    const place = byBranchId.get(row.branchId);
+    return {
+      ...row,
+      business: place?.name ?? "Place details unavailable",
+      branch: place?.branchName ?? "",
+    };
+  });
+}
+
 const panel = "rounded-card border border-border bg-surface p-4 shadow-sm";
 const privateMetadataKey =
   /(email|phone|address|token|secret|password|message|body|raw|content|excerpt|authorization)/i;
@@ -98,14 +137,18 @@ export default async function AdminSection({
 
   if (section === "investigations") {
     const status = filters.status;
-    rows = (
+    const branchRows = await hydrateAdminBranchRows(
       await db
         .select({
           id: investigations.id,
+          branchId: branches.id,
+          detailsSource: branches.detailsSource,
+          address: branches.address,
+          city: branches.city,
           status: investigations.status,
           stage: investigations.stageDetail,
           kind: investigations.kind,
-          name: businesses.name,
+          business: businesses.name,
           branch: branches.name,
         })
         .from(investigations)
@@ -120,35 +163,46 @@ export default async function AdminSection({
             : undefined,
         )
         .orderBy(desc(investigations.updatedAt))
-    ).map((row) => ({
+    );
+    rows = branchRows.map((row) => ({
       id: row.id,
-      label: `${row.name} · ${row.branch}`,
+      label: `${row.business} · ${row.branch}`,
       detail: `${row.kind === "refresh" ? "Refresh investigation" : "Initial investigation"} · ${labelResearchStatus(row.status)}${row.stage ? ` · ${row.stage}` : ""}`,
       href: `/admin/investigations/${row.id}`,
     }));
   } else if (section === "proposals") {
-    rows = (
+    const branchRows = await hydrateAdminBranchRows(
       await db
         .select({
           id: proposedUpdates.id,
+          branchId: branches.id,
+          detailsSource: branches.detailsSource,
+          address: branches.address,
+          city: branches.city,
           status: proposedUpdates.status,
-          name: businesses.name,
+          business: businesses.name,
+          branch: branches.name,
         })
         .from(proposedUpdates)
         .innerJoin(branches, eq(proposedUpdates.branchId, branches.id))
         .innerJoin(businesses, eq(branches.businessId, businesses.id))
         .orderBy(desc(proposedUpdates.updatedAt))
-    ).map((row) => ({
+    );
+    rows = branchRows.map((row) => ({
       id: row.id,
-      label: row.name,
+      label: `${row.business} · ${row.branch}`,
       detail: `Proposal status · ${labelProposalStatus(row.status)}`,
       href: `/admin/proposals/${row.id}`,
     }));
   } else if (section === "certificates") {
-    rows = (
+    const branchRows = await hydrateAdminBranchRows(
       await db
         .select({
           id: certificates.id,
+          branchId: branches.id,
+          detailsSource: branches.detailsSource,
+          address: branches.address,
+          city: branches.city,
           number: certificates.certificateNumber,
           products: certificates.products,
           status: certificates.reviewStatus,
@@ -164,7 +218,8 @@ export default async function AdminSection({
         .leftJoin(branches, eq(certificates.branchId, branches.id))
         .leftJoin(businesses, eq(certificates.businessId, businesses.id))
         .orderBy(desc(certificates.updatedAt))
-    ).map((row) => ({
+    );
+    rows = branchRows.map((row) => ({
       id: row.id,
       label: `${row.business ?? row.branch ?? "Business-level"} · ${row.certifier} · ${row.number ?? "Certificate number unknown"}`,
       detail: `${humanizeLabel(row.status)} · ${row.products.map(humanizeLabel).join(", ")} · valid ${formatAdminDate(row.validFrom)}–${formatAdminDate(row.validUntil)}${row.validUntil && row.validUntil < new Date().toISOString().slice(0, 10) ? " · Expired" : ""}`,
@@ -228,6 +283,10 @@ export default async function AdminSection({
     const drafts = await db
       .select({
         id: outreachMessages.id,
+        branchId: branches.id,
+        detailsSource: branches.detailsSource,
+        address: branches.address,
+        city: branches.city,
         kind: outreachMessages.kind,
         subject: outreachMessages.subject,
         bodyText: outreachMessages.bodyText,
@@ -243,7 +302,8 @@ export default async function AdminSection({
       .innerJoin(businesses, eq(branches.businessId, businesses.id))
       .where(eq(outreachMessages.status, "draft"))
       .orderBy(desc(outreachMessages.createdAt));
-    rows = drafts.map((row) => ({
+    const hydratedDrafts = await hydrateAdminBranchRows(drafts);
+    rows = hydratedDrafts.map((row) => ({
       id: row.id,
       label: `${row.business} · ${row.branch} · ${labelMessageKind(row.kind)} draft`,
       detail: `${row.subject}\n${row.bodyText}`,
@@ -260,18 +320,23 @@ export default async function AdminSection({
         notInArray(unexpectedReplies.reviewStatus, ["dismissed", "assigned"]),
       )
       .orderBy(desc(unexpectedReplies.receivedAt));
-    threadOptions = (
+    const threadRows = await hydrateAdminBranchRows(
       await db
         .select({
           id: outreachThreads.id,
+          branchId: branches.id,
+          detailsSource: branches.detailsSource,
+          address: branches.address,
+          city: branches.city,
           business: businesses.name,
           branch: branches.name,
         })
         .from(outreachThreads)
         .innerJoin(branches, eq(outreachThreads.branchId, branches.id))
         .innerJoin(businesses, eq(branches.businessId, businesses.id))
-        .orderBy(desc(outreachThreads.createdAt))
-    ).map((thread) => ({
+        .orderBy(desc(outreachThreads.createdAt)),
+    );
+    threadOptions = threadRows.map((thread) => ({
       id: thread.id,
       label: `${thread.business} · ${thread.branch}`,
     }));
@@ -287,16 +352,21 @@ export default async function AdminSection({
     const warningDate = new Date(now.getTime() + warningDays * 86_400_000)
       .toISOString()
       .slice(0, 10);
-    const candidateBranches = await db
-      .select({
+    const candidateBranches = await hydrateAdminBranchRows(
+      await db.select({
         id: branches.id,
-        name: businesses.name,
+        branchId: branches.id,
+        detailsSource: branches.detailsSource,
+        address: branches.address,
+        city: branches.city,
+        business: businesses.name,
         branch: branches.name,
         status: branches.researchStatus,
         lastConfirmedAt: branches.lastConfirmedAt,
       })
       .from(branches)
-      .innerJoin(businesses, eq(branches.businessId, businesses.id));
+      .innerJoin(businesses, eq(branches.businessId, businesses.id)),
+    );
     const staleIds = candidateBranches
       .filter(
         (branch) =>
@@ -341,7 +411,7 @@ export default async function AdminSection({
       )
       .map((row) => ({
         id: row.id,
-        label: `${row.name} · ${row.branch}`,
+        label: `${row.business} · ${row.branch}`,
         detail: `${labelResearchStatus(row.status)} · Last confirmed ${formatAdminDate(row.lastConfirmedAt)}`,
         href: `/places/${row.id}`,
       }));

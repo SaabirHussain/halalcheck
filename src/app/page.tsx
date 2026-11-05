@@ -1,6 +1,10 @@
+import { headers } from "next/headers";
 import { DiscoveryExplorer } from "@/components/discovery/DiscoveryExplorer";
 import type { DiscoveryFilterState } from "@/components/discovery/filter-types";
 import { listPublicBranches } from "@/lib/domain/public";
+import { searchAndCacheProviderPlaces } from "@/lib/domain/provider-places";
+import { getClientIp } from "@/lib/http/client-ip";
+import { db } from "@/db";
 import {
   businessCategories,
   researchStatuses,
@@ -56,15 +60,50 @@ export default async function HomePage({
     lng: lat !== undefined && lng !== undefined ? lng : undefined,
     area: getValue(params, "area")?.slice(0, 100) ?? "Demo City",
   };
-  const places = await listPublicBranches({
-    ...initialFilters,
-    category: initialFilters.category,
-    status: initialFilters.status,
-    certified:
-      initialFilters.certified === undefined
-        ? undefined
-        : initialFilters.certified === "true",
+  const providerSearch = await searchAndCacheProviderPlaces(
+    {
+      ...initialFilters,
+      certified:
+        initialFilters.certified === undefined
+          ? undefined
+          : initialFilters.certified === "true",
+    },
+    getClientIp(await headers()),
+    db,
+  );
+  initialFilters.lat = providerSearch.filters.lat;
+  initialFilters.lng = providerSearch.filters.lng;
+  if (
+    !getValue(params, "area") &&
+    lat === undefined &&
+    lng === undefined &&
+    process.env.PLACES_PROVIDER === "google"
+  ) {
+    initialFilters.area = "Toronto";
+  }
+  const rows = await listPublicBranches(
+    providerSearch.filters,
+    db,
+    new Set(providerSearch.overlay.keys()),
+  );
+  const places = rows.map((row) => {
+    const livePlace = providerSearch.overlay.get(row.id);
+    if (row.detailsSource !== "provider" || !livePlace) {
+      return { ...row, attribution: false };
+    }
+    return {
+      ...row,
+      name: livePlace.name,
+      address: livePlace.address,
+      attribution: livePlace.provider === "google",
+    };
   });
 
-  return <DiscoveryExplorer initialFilters={initialFilters} places={places} />;
+  return (
+    <DiscoveryExplorer
+      initialFilters={initialFilters}
+      notice={providerSearch.notice}
+      places={places}
+    />
+  );
 }

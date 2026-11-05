@@ -15,6 +15,7 @@ import {
   addContactAdminAction,
   approveDraftAdminAction,
   cancelInvestigationAction,
+  confirmProviderBusinessDetailsAction,
   editDraftAdminAction,
   addSuppressionAdminAction,
   pauseInvestigationAction,
@@ -26,6 +27,8 @@ import {
 import { retryJobAction } from "@/app/admin/actions";
 import { ReplySimulator } from "@/components/admin/ReplySimulator";
 import { researchQuestions } from "@/lib/domain/outreach";
+import { hydrateProviderBranches } from "@/lib/domain/public";
+import { GoogleAttribution } from "@/components/ui/GoogleAttribution";
 import {
   formatAdminDateTime,
   humanizeLabel,
@@ -52,12 +55,22 @@ export default async function InvestigationDetail({
     .where(eq(investigations.id, id))
     .limit(1);
   if (!row) return <p className="text-muted">Investigation not found.</p>;
-  const [branch] = await db
-    .select({ name: businesses.name, branchName: branches.name })
+  const [branchRow] = await db
+    .select({
+      id: branches.id,
+      detailsSource: branches.detailsSource,
+      name: businesses.name,
+      branchName: branches.name,
+      address: branches.address,
+      city: branches.city,
+    })
     .from(branches)
     .innerJoin(businesses, eq(branches.businessId, businesses.id))
     .where(eq(branches.id, row.branchId))
     .limit(1);
+  const [branch] = branchRow
+    ? await hydrateProviderBranches([{ ...branchRow, attribution: false }])
+    : [undefined];
   const sourceRows = await db
     .select()
     .from(sources)
@@ -201,6 +214,97 @@ export default async function InvestigationDetail({
           ) : null}
         </div>
       </header>
+      {branch?.detailsSource === "provider" ? (
+        <section className="grid gap-4 rounded-card border border-border bg-surface p-5">
+          <div>
+            <h3 className="font-display text-xl font-semibold">
+              Confirm business details
+            </h3>
+            <p className="mt-1 text-sm text-muted">
+              Confirm details from the business’s own website or signage before
+              contacting the business.
+            </p>
+          </div>
+          <div className="rounded-lg border border-border bg-surface-2 p-3">
+            <p className="text-sm font-semibold">
+              From Google Maps — reference only, not saved
+            </p>
+            <GoogleAttribution />
+            <dl className="mt-2 grid gap-2 text-sm sm:grid-cols-2">
+              <div>
+                <dt className="text-muted">Name</dt>
+                <dd>{branch.name}</dd>
+              </div>
+              <div>
+                <dt className="text-muted">Address</dt>
+                <dd>{branch.address}</dd>
+              </div>
+            </dl>
+          </div>
+          <form
+            action={confirmProviderBusinessDetailsAction}
+            className="grid gap-3 sm:grid-cols-2"
+          >
+            <input name="branchId" type="hidden" value={branch.id} />
+            <input name="investigationId" type="hidden" value={id} />
+            <label className="grid gap-1 text-sm font-semibold">
+              Name
+              <input
+                className="min-h-11 rounded-lg border border-border bg-background px-3 font-normal"
+                maxLength={200}
+                name="name"
+                required
+              />
+            </label>
+            <label className="grid gap-1 text-sm font-semibold">
+              Address
+              <input
+                className="min-h-11 rounded-lg border border-border bg-background px-3 font-normal"
+                maxLength={500}
+                name="address"
+                required
+              />
+            </label>
+            <label className="grid gap-1 text-sm font-semibold">
+              City
+              <input
+                className="min-h-11 rounded-lg border border-border bg-background px-3 font-normal"
+                maxLength={200}
+                name="city"
+                required
+              />
+            </label>
+            <label className="grid gap-1 text-sm font-semibold">
+              Website
+              <input
+                className="min-h-11 rounded-lg border border-border bg-background px-3 font-normal"
+                name="website"
+                type="url"
+              />
+            </label>
+            <label className="grid gap-1 text-sm font-semibold">
+              Phone
+              <input
+                className="min-h-11 rounded-lg border border-border bg-background px-3 font-normal"
+                name="phone"
+                type="tel"
+              />
+            </label>
+            <label className="grid gap-1 text-sm font-semibold">
+              Timezone
+              <input
+                className="min-h-11 rounded-lg border border-border bg-background px-3 font-normal"
+                defaultValue="America/Toronto"
+                name="timezone"
+                required
+              />
+            </label>
+            <button className="min-h-11 rounded-lg bg-accent px-4 font-semibold text-white sm:col-span-2">
+              Save confirmed business details
+            </button>
+          </form>
+        </section>
+      ) : null}
       {process.env.DEMO_MODE === "true" && simulated ? (
         <p
           className="rounded-xl border border-info/20 bg-info-soft p-3 text-sm"

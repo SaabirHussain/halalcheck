@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
+import { z } from "zod";
 import { db as defaultDb } from "@/db";
 import {
+  branches,
+  businesses,
   certificates,
   claims,
   contactEndpoints,
@@ -21,6 +24,115 @@ import { writeAudit } from "./audit";
 import { ingestInboundEmail } from "./inbound-email";
 
 type Database = typeof defaultDb;
+
+const providerBusinessDetailsSchema = z.object({
+  branchId: z.string().uuid(),
+  name: z.string().trim().min(1).max(200),
+  address: z.string().trim().min(1).max(500),
+  city: z.string().trim().min(1).max(200),
+  website: z
+    .string()
+    .trim()
+    .pipe(
+      z.union([
+        z
+          .string()
+          .url()
+          .refine((value) => /^https?:\/\//i.test(value)),
+        z.literal(""),
+      ]),
+    )
+    .default(""),
+  phone: z.string().trim().max(100).default(""),
+  timezone: z.string().trim().min(1).max(100).default("America/Toronto"),
+});
+
+const waitingForBusinessDetails =
+  "Waiting for an administrator to confirm business details before contacting the business.";
+
+export async function confirmProviderBusinessDetails(
+  actor: Actor,
+  input: z.input<typeof providerBusinessDetailsSchema>,
+  queue: JobQueue,
+  database: Database = defaultDb,
+) {
+  const admin = await requireAdminActor(actor, database);
+  const parsed = providerBusinessDetailsSchema.safeParse(input);
+  if (!parsed.success) throw new Error("Invalid business details.");
+  const details = parsed.data;
+  const resumedInvestigationId = await database.transaction(async (tx) => {
+    const [branch] = await tx
+      .select({
+        id: branches.id,
+        businessId: branches.businessId,
+        detailsSource: branches.detailsSource,
+      })
+      .from(branches)
+      .where(eq(branches.id, details.branchId))
+      .for("update")
+      .limit(1);
+    if (!branch || branch.detailsSource !== "provider") {
+      throw new Error("This business does not need provider details confirmed.");
+    }
+    const now = new Date();
+    const website = details.website || null;
+    await tx
+      .update(businesses)
+      .set({ name: details.name, website, updatedAt: now })
+      .where(eq(businesses.id, branch.businessId));
+    await tx
+      .update(branches)
+      .set({
+        name: details.name,
+        address: details.address,
+        city: details.city,
+        website,
+        phone: details.phone || null,
+        timezone: details.timezone,
+        detailsSource: "first_party",
+        updatedAt: now,
+      })
+      .where(eq(branches.id, details.branchId));
+    await writeAudit(tx, {
+      actorUserId: admin.id,
+      actorType: "admin",
+      action: "provider_business_details_confirmed",
+      entityType: "branch",
+      entityId: details.branchId,
+      metadata: { detailsSource: "first_party" },
+    });
+    const [waiting] = await tx
+      .select({ id: investigations.id })
+      .from(investigations)
+      .where(
+        and(
+          eq(investigations.branchId, details.branchId),
+          eq(investigations.isActive, true),
+          eq(investigations.stageDetail, waitingForBusinessDetails),
+        ),
+      )
+      .limit(1);
+    if (waiting) {
+      await tx
+        .update(investigations)
+        .set({
+          paused: false,
+          stageDetail: "Business details confirmed. Preparing outreach.",
+          updatedAt: now,
+        })
+        .where(eq(investigations.id, waiting.id));
+    }
+    return waiting?.id ?? null;
+  });
+  if (resumedInvestigationId) {
+    await queue.enqueue(
+      "investigation.prepare_outreach",
+      { investigationId: resumedInvestigationId },
+      { singletonKey: `prepare_outreach:${resumedInvestigationId}` },
+    );
+  }
+  return { resumedInvestigationId };
+}
 
 export async function addContactEndpoint(
   actor: Actor,

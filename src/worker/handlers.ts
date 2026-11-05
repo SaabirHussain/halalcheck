@@ -4,6 +4,7 @@ import type { JobHandler, JobQueue } from "@/lib/jobs/types";
 import type { db as defaultDb } from "@/db";
 import {
   branches,
+  externalPlaceIds,
   businesses,
   claims,
   certificates,
@@ -25,6 +26,8 @@ import { notifyFollowers } from "@/lib/domain/notifications";
 import { getPushProvider } from "@/lib/providers/push";
 import { reconcileInvestigations, refreshScan } from "@/lib/domain/refresh";
 import { isExcerptInText } from "@/lib/providers/ai/openai";
+import { getPlacesProvider } from "@/lib/providers/places";
+import { consumeGoogleDetailsLimit } from "@/lib/providers/places/limits";
 
 type Database = typeof defaultDb;
 type Payload = Record<string, unknown>;
@@ -55,13 +58,42 @@ export function buildJobHandlers(
           website: branches.website,
           businessWebsite: businesses.website,
           businessName: businesses.name,
+          detailsSource: branches.detailsSource,
         })
         .from(branches)
         .innerJoin(businesses, eq(branches.businessId, businesses.id))
         .where(eq(branches.id, investigation.branchId))
         .limit(1);
       if (!branch) throw new Error("Branch not found.");
-      const website = branch.website ?? branch.businessWebsite;
+      let website = branch.website ?? branch.businessWebsite;
+      if (branch.detailsSource === "provider") {
+        const [externalPlace] = await database
+          .select({
+            provider: externalPlaceIds.provider,
+            externalId: externalPlaceIds.externalId,
+          })
+          .from(externalPlaceIds)
+          .where(eq(externalPlaceIds.branchId, branch.id))
+          .limit(1);
+        website = null;
+        if (
+          externalPlace &&
+          (externalPlace.provider !== "google" ||
+            (await consumeGoogleDetailsLimit(database)))
+        ) {
+          try {
+            website =
+              (
+                await getPlacesProvider().getPlace(
+                  externalPlace.externalId,
+                  "contact",
+                )
+              )?.websiteUri ?? null;
+          } catch {
+            website = null;
+          }
+        }
+      }
       const domain = website ? new URL(website).hostname : "";
       await database
         .update(investigations)
@@ -351,6 +383,38 @@ export function buildJobHandlers(
           updatedAt: new Date(),
         })
         .where(eq(investigations.id, investigationId));
+      if (branch.detailsSource === "provider" && website) {
+        await database
+          .update(investigations)
+          .set({
+            stageDetail:
+              "Waiting for an administrator to confirm business details before contacting the business.",
+            paused: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(investigations.id, investigationId));
+        return;
+      }
+      if (branch.detailsSource === "provider" && !website) {
+        await database
+          .update(investigations)
+          .set({
+            status: "reviewing_evidence",
+            stageDetail: "No usable business contact found.",
+            updatedAt: new Date(),
+          })
+          .where(eq(investigations.id, investigationId));
+        await database
+          .update(branches)
+          .set({ researchStatus: "reviewing_evidence", updatedAt: new Date() })
+          .where(eq(branches.id, branch.id));
+        await queue.enqueue(
+          "investigation.evidence_review",
+          { investigationId },
+          { singletonKey: `evidence_review:${investigationId}` },
+        );
+        return;
+      }
       await queue.enqueue(
         "investigation.prepare_outreach",
         { investigationId },
