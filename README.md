@@ -174,11 +174,12 @@ When Google is selected without an explicit location, the first search uses
 place IDs indefinitely and refreshes coordinates within 30 days; names,
 addresses, websites, and phone numbers are fetched live and not saved.
 
-Provider places have no first-party business details initially. Before
-outreach, an administrator must confirm the name, address, city, website,
-phone, and timezone from the business’s own website or signage. Google details
-are shown as reference only; outreach drafting and approval remain blocked
-until confirmation.
+Provider places have no first-party business details initially. The worker
+checks up to 50 physical locations listed on the official website and matches
+their addresses to the provider location before saving first-party details. If
+it cannot verify a match, an administrator must confirm details from the
+business’s own website or signage. Google details are used only for comparison
+and are never saved.
 
 ### Geocoding
 
@@ -210,7 +211,11 @@ Create a Resend webhook at `${APP_URL}/api/webhooks/resend` for
 `RESEND_WEBHOOK_SECRET`. Configure `OUTREACH_FROM_ADDRESS`,
 `OUTREACH_REPLY_DOMAIN`, `OUTREACH_DEFAULT_TIMEZONE`,
 `OUTREACH_BUSINESS_HOURS`, and `OUTREACH_BUSINESS_DAYS` for sender identity,
-reply routing, and permitted send windows. Keep
+reply routing, and permitted send windows. `OUTREACH_MODE` selects
+`manual_approval` (default) or `auto_send_approved`; in auto mode, only
+approved or eligible official generic contacts are sent without administrator
+approval. `OUTREACH_DAILY_SEND_LIMIT` defaults to 50 outbound messages per
+rolling 24 hours. Keep
 `OUTREACH_ALLOW_REAL_SEND=false` until setup is complete; enable it only after
 testing delivery to your own address.
 

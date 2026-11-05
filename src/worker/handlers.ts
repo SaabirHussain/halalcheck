@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { JobHandler, JobQueue } from "@/lib/jobs/types";
 import type { db as defaultDb } from "@/db";
 import {
@@ -19,23 +19,40 @@ import {
   sources,
 } from "@/db/schema";
 import { getAIProvider } from "@/lib/providers/ai";
+import type { AIProvider } from "@/lib/providers/ai/types";
 import { SSRFSafeFetcher } from "@/lib/providers/fetcher";
 import { createOutreachDraft, sendOutreach } from "@/lib/domain/outreach";
+import {
+  applyFirstPartyBusinessDetails,
+  waitingForAutomaticBusinessDetails,
+} from "@/lib/domain/admin";
+import { addressesMatch } from "@/lib/domain/address-match";
+import {
+  classifyBusinessEmails,
+  domainsMatchWithWwwApex,
+} from "@/lib/domain/contact-classification";
 import { parseInboundReply, reviewEvidence } from "@/lib/domain/claims";
 import { notifyFollowers } from "@/lib/domain/notifications";
 import { getPushProvider } from "@/lib/providers/push";
 import { reconcileInvestigations, refreshScan } from "@/lib/domain/refresh";
 import { isExcerptInText } from "@/lib/providers/ai/openai";
 import { getPlacesProvider } from "@/lib/providers/places";
+import type { PlacesProvider } from "@/lib/providers/places";
 import { consumeGoogleDetailsLimit } from "@/lib/providers/places/limits";
 
 type Database = typeof defaultDb;
 type Payload = Record<string, unknown>;
+type HandlerDependencies = {
+  aiProvider?: AIProvider;
+  placesProvider?: PlacesProvider;
+  fetcher?: Pick<SSRFSafeFetcher, "fetch">;
+};
 const workerActor = { type: "worker" } as const;
 
 export function buildJobHandlers(
   database: Database,
   queue: JobQueue,
+  dependencies: HandlerDependencies = {},
 ): Record<string, JobHandler<Payload>> {
   return {
     "investigation.public_research": async (payload) => {
@@ -66,7 +83,10 @@ export function buildJobHandlers(
         .limit(1);
       if (!branch) throw new Error("Branch not found.");
       let website = branch.website ?? branch.businessWebsite;
+      let googleFormattedAddress: string | null = null;
       if (branch.detailsSource === "provider") {
+        const placesProvider =
+          dependencies.placesProvider ?? getPlacesProvider();
         const [externalPlace] = await database
           .select({
             provider: externalPlaceIds.provider,
@@ -82,13 +102,12 @@ export function buildJobHandlers(
             (await consumeGoogleDetailsLimit(database)))
         ) {
           try {
-            website =
-              (
-                await getPlacesProvider().getPlace(
-                  externalPlace.externalId,
-                  "contact",
-                )
-              )?.websiteUri ?? null;
+            const details = await placesProvider.getPlace(
+              externalPlace.externalId,
+              "contact",
+            );
+            website = details?.websiteUri ?? null;
+            googleFormattedAddress = details?.formattedAddress ?? null;
           } catch {
             website = null;
           }
@@ -110,7 +129,7 @@ export function buildJobHandlers(
           updatedAt: new Date(),
         })
         .where(eq(branches.id, branch.id));
-      const fetcher = new SSRFSafeFetcher();
+      const fetcher = dependencies.fetcher ?? new SSRFSafeFetcher();
       const registryRows = await database
         .select({
           id: certifiers.id,
@@ -178,8 +197,10 @@ export function buildJobHandlers(
             .filter((url): url is URL =>
               Boolean(
                 url &&
-                url.hostname === domain &&
-                /about|menu|halal|contact/i.test(url.pathname),
+                domainsMatchWithWwwApex(url.hostname, domain) &&
+                /about|menu|halal|contact|location|store|branch|find/i.test(
+                  url.pathname,
+                ),
               ),
             );
           for (const linkedUrl of linked) {
@@ -207,7 +228,7 @@ export function buildJobHandlers(
           ),
         );
       }
-      const provider = getAIProvider();
+      const provider = dependencies.aiProvider ?? getAIProvider();
       const websitePages = pages.filter((page) => !page.registry);
       const extracted = websitePages.length
         ? await provider.extractPublicClaims(websitePages)
@@ -346,56 +367,59 @@ export function buildJobHandlers(
             }
           }
         }
-        const uniqueEmails = emails;
-        const generic = uniqueEmails.filter((email) =>
-          /^(info|contact|hello|office|manager)@/i.test(email),
-        );
-        for (const email of uniqueEmails) {
-          const domainMismatch =
-            email.split("@")[1]?.toLowerCase() !== domain.toLowerCase();
-          const personal =
-            !generic.includes(email) ||
-            /@(gmail|yahoo|outlook|hotmail)\./i.test(email);
+        for (const classification of classifyBusinessEmails(emails, domain)) {
           await database
             .insert(contactEndpoints)
             .values({
               branchId: branch.id,
               kind: "email",
-              value: email,
-              status:
-                uniqueEmails.length > 1 || domainMismatch || personal
-                  ? "ambiguous"
-                  : "unverified",
+              value: classification.email,
+              status: classification.status,
               sourceId,
-              isPersonal: personal,
-              notes: domainMismatch
-                ? "Email domain does not match the business website."
-                : null,
+              isPersonal: classification.isPersonal,
+              notes: classification.notes,
             })
             .onConflictDoNothing();
         }
       }
+      let hasUsableBusinessEmail = false;
+      if (branch.detailsSource === "provider") {
+        const [usableEndpoint] = await database
+          .select({ id: contactEndpoints.id })
+          .from(contactEndpoints)
+          .where(
+            and(
+              eq(contactEndpoints.branchId, branch.id),
+              eq(contactEndpoints.kind, "email"),
+              inArray(contactEndpoints.status, ["unverified", "approved"]),
+              eq(contactEndpoints.isPersonal, false),
+            ),
+          )
+          .limit(1);
+        hasUsableBusinessEmail = Boolean(usableEndpoint);
+      }
+      const shouldExtractBusinessDetails =
+        branch.detailsSource === "provider" &&
+        websitePages.length > 0 &&
+        hasUsableBusinessEmail;
+      const extractedBusinessDetails =
+        shouldExtractBusinessDetails
+          ? await provider.extractBusinessDetails(websitePages)
+          : null;
       await database
         .update(investigations)
         .set({
           budgetFetchesUsed: fetchesUsed,
-          budgetAiCallsUsed: websitePages.length ? 1 : 0,
+          budgetAiCallsUsed: websitePages.length
+            ? 1 + Number(shouldExtractBusinessDetails)
+            : 0,
           updatedAt: new Date(),
         })
         .where(eq(investigations.id, investigationId));
-      if (branch.detailsSource === "provider" && website) {
-        await database
-          .update(investigations)
-          .set({
-            stageDetail:
-              "Waiting for an administrator to confirm business details before contacting the business.",
-            paused: true,
-            updatedAt: new Date(),
-          })
-          .where(eq(investigations.id, investigationId));
-        return;
-      }
-      if (branch.detailsSource === "provider" && !website) {
+      if (
+        branch.detailsSource === "provider" &&
+        (!website || !hasUsableBusinessEmail)
+      ) {
         await database
           .update(investigations)
           .set({
@@ -414,6 +438,51 @@ export function buildJobHandlers(
           { singletonKey: `evidence_review:${investigationId}` },
         );
         return;
+      }
+      const matchingLocation = extractedBusinessDetails?.locations.find(
+        (location) =>
+          addressesMatch(location.address, googleFormattedAddress),
+      );
+      if (branch.detailsSource === "provider" && website) {
+        if (
+          websitePages.length &&
+          extractedBusinessDetails &&
+          matchingLocation
+        ) {
+          await database.transaction(async (tx) => {
+            await applyFirstPartyBusinessDetails(
+              tx,
+              {
+                branchId: branch.id,
+                name: extractedBusinessDetails.name,
+                address: matchingLocation.address,
+                city: matchingLocation.city,
+                website: websitePages[0]!.url,
+                phone: matchingLocation.phone ?? null,
+                timezone:
+                  process.env.OUTREACH_DEFAULT_TIMEZONE ?? "America/Toronto",
+              },
+              {
+                actorType: "worker",
+                action: "provider_business_details_auto_confirmed",
+                metadata: {
+                  detailsSource: "first_party",
+                  method: "official_website",
+                },
+              },
+            );
+          });
+        } else {
+          await database
+            .update(investigations)
+            .set({
+              stageDetail: waitingForAutomaticBusinessDetails,
+              paused: true,
+              updatedAt: new Date(),
+            })
+            .where(eq(investigations.id, investigationId));
+          return;
+        }
       }
       await queue.enqueue(
         "investigation.prepare_outreach",

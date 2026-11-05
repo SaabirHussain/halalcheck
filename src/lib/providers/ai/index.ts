@@ -20,6 +20,8 @@ export function getAIProvider(): AIProvider {
 
 export type {
   AIProvider,
+  ExtractedBusinessDetails,
+  ExtractedBusinessLocation,
   OpenQuestion,
   ParsedReply,
   PublicClaim,

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db as defaultDb } from "@/db";
 import {
@@ -24,6 +24,7 @@ import { writeAudit } from "./audit";
 import { ingestInboundEmail } from "./inbound-email";
 
 type Database = typeof defaultDb;
+type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
 const providerBusinessDetailsSchema = z.object({
   branchId: z.string().uuid(),
@@ -47,8 +48,63 @@ const providerBusinessDetailsSchema = z.object({
   timezone: z.string().trim().min(1).max(100).default("America/Toronto"),
 });
 
-const waitingForBusinessDetails =
+export const waitingForBusinessDetails =
   "Waiting for an administrator to confirm business details before contacting the business.";
+export const waitingForAutomaticBusinessDetails =
+  "Couldn't confirm business details from the restaurant's website automatically. Waiting for an administrator to confirm them.";
+
+export async function applyFirstPartyBusinessDetails(
+  tx: Transaction,
+  details: {
+    branchId: string;
+    name: string;
+    address: string;
+    city: string;
+    website: string | null;
+    phone: string | null;
+    timezone: string;
+  },
+  auditActor: {
+    actorType: "admin" | "worker" | "system";
+    actorUserId?: string | null;
+    action: string;
+    metadata?: Record<string, string | number | boolean | null>;
+  },
+) {
+  const [branch] = await tx
+    .select({ businessId: branches.businessId })
+    .from(branches)
+    .where(eq(branches.id, details.branchId))
+    .for("update")
+    .limit(1);
+  if (!branch) throw new Error("Branch not found.");
+  const now = new Date();
+  await tx
+    .update(businesses)
+    .set({ name: details.name, website: details.website, updatedAt: now })
+    .where(eq(businesses.id, branch.businessId));
+  await tx
+    .update(branches)
+    .set({
+      name: details.name,
+      address: details.address,
+      city: details.city,
+      website: details.website,
+      phone: details.phone,
+      timezone: details.timezone,
+      detailsSource: "first_party",
+      updatedAt: now,
+    })
+    .where(eq(branches.id, details.branchId));
+  await writeAudit(tx, {
+    actorUserId: auditActor.actorUserId,
+    actorType: auditActor.actorType,
+    action: auditActor.action,
+    entityType: "branch",
+    entityId: details.branchId,
+    metadata: auditActor.metadata,
+  });
+}
 
 export async function confirmProviderBusinessDetails(
   actor: Actor,
@@ -63,8 +119,6 @@ export async function confirmProviderBusinessDetails(
   const resumedInvestigationId = await database.transaction(async (tx) => {
     const [branch] = await tx
       .select({
-        id: branches.id,
-        businessId: branches.businessId,
         detailsSource: branches.detailsSource,
       })
       .from(branches)
@@ -75,32 +129,24 @@ export async function confirmProviderBusinessDetails(
       throw new Error("This business does not need provider details confirmed.");
     }
     const now = new Date();
-    const website = details.website || null;
-    await tx
-      .update(businesses)
-      .set({ name: details.name, website, updatedAt: now })
-      .where(eq(businesses.id, branch.businessId));
-    await tx
-      .update(branches)
-      .set({
+    await applyFirstPartyBusinessDetails(
+      tx,
+      {
+        branchId: details.branchId,
         name: details.name,
         address: details.address,
         city: details.city,
-        website,
+        website: details.website || null,
         phone: details.phone || null,
         timezone: details.timezone,
-        detailsSource: "first_party",
-        updatedAt: now,
-      })
-      .where(eq(branches.id, details.branchId));
-    await writeAudit(tx, {
-      actorUserId: admin.id,
-      actorType: "admin",
-      action: "provider_business_details_confirmed",
-      entityType: "branch",
-      entityId: details.branchId,
-      metadata: { detailsSource: "first_party" },
-    });
+      },
+      {
+        actorUserId: admin.id,
+        actorType: "admin",
+        action: "provider_business_details_confirmed",
+        metadata: { detailsSource: "first_party" },
+      },
+    );
     const [waiting] = await tx
       .select({ id: investigations.id })
       .from(investigations)
@@ -108,7 +154,11 @@ export async function confirmProviderBusinessDetails(
         and(
           eq(investigations.branchId, details.branchId),
           eq(investigations.isActive, true),
-          eq(investigations.stageDetail, waitingForBusinessDetails),
+          eq(investigations.paused, true),
+          inArray(investigations.stageDetail, [
+            waitingForBusinessDetails,
+            waitingForAutomaticBusinessDetails,
+          ]),
         ),
       )
       .limit(1);

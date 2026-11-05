@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   branches,
@@ -20,6 +20,30 @@ import { requireAdminActor } from "./actor";
 import { writeAudit } from "./audit";
 
 type Database = typeof defaultDb;
+export type OutreachMode = "manual_approval" | "auto_send_approved";
+
+export function effectiveOutreachMode(
+  settings: { mode?: string } | null | undefined,
+): OutreachMode {
+  const override = process.env.OUTREACH_MODE;
+  if (override === "manual_approval" || override === "auto_send_approved")
+    return override;
+  return settings?.mode === "auto_send_approved"
+    ? "auto_send_approved"
+    : "manual_approval";
+}
+
+function outreachDailySendLimit() {
+  const configured = process.env.OUTREACH_DAILY_SEND_LIMIT?.trim();
+  const value = configured ? Number(configured) : 50;
+  return Number.isInteger(value) && value >= 0 ? value : 50;
+}
+
+function hasDomainMismatchNote(notes: string | null) {
+  return Boolean(
+    notes?.includes("Email domain does not match the business website."),
+  );
+}
 
 export const researchQuestions = [
   {
@@ -204,7 +228,9 @@ export async function createOutreachDraft(
       );
     return { status: "reviewing_evidence" as const, messageId: null };
   }
-  const [endpoint] = await database
+  const [settings] = await database.select().from(outreachSettings).limit(1);
+  const mode = effectiveOutreachMode(settings);
+  const [selectedEndpoint] = await database
     .select()
     .from(contactEndpoints)
     .where(
@@ -214,7 +240,12 @@ export async function createOutreachDraft(
         inArray(contactEndpoints.status, ["approved", "unverified"]),
       ),
     )
+    .orderBy(
+      sql`CASE WHEN ${contactEndpoints.status} = 'approved' THEN 0 ELSE 1 END`,
+      asc(contactEndpoints.createdAt),
+    )
     .limit(1);
+  let endpoint = selectedEndpoint;
   if (!endpoint || endpoint.status === "ambiguous" || endpoint.isPersonal) {
     await database.transaction(async (tx) => {
       await tx
@@ -388,7 +419,6 @@ export async function createOutreachDraft(
     .onConflictDoNothing()
     .returning({ id: outreachMessages.id });
 
-  const [settings] = await database.select().from(outreachSettings).limit(1);
   await database.transaction(async (tx) => {
     await tx
       .update(investigations)
@@ -420,9 +450,43 @@ export async function createOutreachDraft(
   });
   if (
     message &&
+    mode === "auto_send_approved" &&
     investigation.kind !== "refresh" &&
-    settings?.mode === "auto_send_approved" &&
-    endpoint.status === "approved"
+    endpoint.status === "unverified" &&
+    !endpoint.isPersonal &&
+    !hasDomainMismatchNote(endpoint.notes)
+  ) {
+    const endpointApproved = await database.transaction(async (tx) => {
+      const [updatedEndpoint] = await tx
+        .update(contactEndpoints)
+        .set({ status: "approved", updatedAt: new Date() })
+        .where(
+          and(
+            eq(contactEndpoints.id, endpoint!.id),
+            eq(contactEndpoints.status, "unverified"),
+            eq(contactEndpoints.isPersonal, false),
+          ),
+        )
+        .returning({ id: contactEndpoints.id });
+      if (!updatedEndpoint) return false;
+      await writeAudit(tx, {
+        actorType: actor.type === "admin" ? "admin" : actor.type,
+        actorUserId: actor.type === "admin" ? actor.userId : null,
+        action: "contact_endpoint_auto_approved",
+        entityType: "contact_endpoint",
+        entityId: updatedEndpoint.id,
+      });
+      return true;
+    });
+    if (endpointApproved) endpoint = { ...endpoint, status: "approved" };
+  }
+  if (
+    message &&
+    investigation.kind !== "refresh" &&
+    mode === "auto_send_approved" &&
+    endpoint.status === "approved" &&
+    !endpoint.isPersonal &&
+    !hasDomainMismatchNote(endpoint.notes)
   ) {
     await database
       .update(outreachMessages)
@@ -876,6 +940,28 @@ export async function sendOutreach(
     .where(eq(branches.id, thread.branchId))
     .limit(1);
   if (!branch) throw new Error("Branch not found.");
+  const [dailySent] = await database
+    .select({ count: sql<number>`count(*)::int` })
+    .from(outreachMessages)
+    .where(
+      and(
+        eq(outreachMessages.direction, "outbound"),
+        gte(outreachMessages.sentAt, new Date(Date.now() - 24 * 60 * 60 * 1000)),
+        lte(outreachMessages.sentAt, new Date()),
+      ),
+    );
+  if ((dailySent?.count ?? 0) >= outreachDailySendLimit()) {
+    return reschedule(
+      database,
+      queue,
+      messageId,
+      nextBusinessWindow(
+        new Date(Date.now() + 24 * 60 * 60 * 1000),
+        branch.timezone,
+      ),
+      "daily-limit",
+    );
+  }
   const branchIds = await database
     .select({ id: branches.id })
     .from(branches)

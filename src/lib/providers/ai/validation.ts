@@ -45,3 +45,20 @@ export const replySchema = z.object({
     .nullable()
     .default(null),
 });
+
+export const businessLocationSchema = z
+  .object({
+    address: z.string().trim().min(1).max(500).nullable(),
+    city: z.string().trim().min(1).max(200).nullable(),
+    phone: z.string().trim().min(1).max(100).nullable().optional(),
+    addressExcerpt: z.string().trim().min(1).max(1000).nullable(),
+  })
+  .strict();
+
+export const businessDetailsSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200).nullable(),
+    nameExcerpt: z.string().trim().min(1).max(1000).nullable(),
+    locations: z.array(z.unknown()).max(50),
+  })
+  .strict();

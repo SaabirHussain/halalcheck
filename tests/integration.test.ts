@@ -57,9 +57,12 @@ import {
   ingestInboundEmail,
 } from "@/lib/domain/inbound-email";
 import { parseInboundReply, reviewEvidence } from "@/lib/domain/claims";
+import { addressesMatch } from "@/lib/domain/address-match";
+import { classifyBusinessEmails } from "@/lib/domain/contact-classification";
 import {
   approveOutreachMessage,
   createOutreachDraft,
+  effectiveOutreachMode,
   nextBusinessWindow,
   retryFailedOutreachSend,
   sendOutreach,
@@ -70,10 +73,15 @@ import { notifyFollowers } from "@/lib/domain/notifications";
 import { getPublicBranch, listPublicBranches } from "@/lib/domain/public";
 import {
   purgeExpiredProviderCache,
+  reconcileInvestigations,
   refreshScan,
 } from "@/lib/domain/refresh";
 import { searchAndCacheProviderPlaces } from "@/lib/domain/provider-places";
-import { confirmProviderBusinessDetails } from "@/lib/domain/admin";
+import {
+  confirmProviderBusinessDetails,
+  waitingForAutomaticBusinessDetails,
+  waitingForBusinessDetails,
+} from "@/lib/domain/admin";
 import { DemoAIProvider } from "@/lib/providers/ai/demo";
 import {
   OpenAICompatibleProvider,
@@ -107,6 +115,12 @@ import {
 import { authenticateUser } from "@/lib/auth/service";
 import { hashSessionToken, revokeSessionByToken } from "@/lib/auth/sessions";
 import type { EmailProvider } from "@/lib/providers/email/types";
+import type {
+  AIProvider,
+  ExtractedBusinessDetails,
+} from "@/lib/providers/ai/types";
+import type { FetchedPage } from "@/lib/providers/fetcher/types";
+import type { PlacesProvider } from "@/lib/providers/places/types";
 
 process.env.EMAIL_PROVIDER = "demo";
 process.env.OUTREACH_ALLOW_REAL_SEND = "false";
@@ -496,6 +510,74 @@ describe("public discovery", () => {
   });
 });
 
+describe("business detail matching and contact classification", () => {
+  it("matches address number and street name while normalizing common forms", () => {
+    expect(
+      addressesMatch(
+        "253 Yonge St, Toronto",
+        "253 Yonge Street, Toronto, ON M5B 1N8, Canada",
+      ),
+    ).toBe(true);
+    expect(addressesMatch("253 W Yonge St", "253 West Yonge Street")).toBe(
+      true,
+    );
+    expect(addressesMatch("255 Yonge St", "253 Yonge Street")).toBe(false);
+    expect(addressesMatch("253 Bay St", "253 Yonge Street")).toBe(false);
+    expect(addressesMatch("Yonge Street, Toronto", "253 Yonge Street")).toBe(
+      false,
+    );
+  });
+
+  it("prefers one matching generic contact and marks every other address ambiguous", () => {
+    expect(
+      classifyBusinessEmails(
+        [
+          "info@paramountfinefoods.com",
+          "jobs@paramountfinefoods.com",
+          "someone@gmail.com",
+        ],
+        "www.paramountfinefoods.com",
+      ),
+    ).toEqual([
+      {
+        email: "info@paramountfinefoods.com",
+        status: "unverified",
+        isPersonal: false,
+        domainMismatch: false,
+        notes: null,
+      },
+      {
+        email: "jobs@paramountfinefoods.com",
+        status: "ambiguous",
+        isPersonal: true,
+        domainMismatch: false,
+        notes: null,
+      },
+      {
+        email: "someone@gmail.com",
+        status: "ambiguous",
+        isPersonal: true,
+        domainMismatch: true,
+        notes: "Email domain does not match the business website.",
+      },
+    ]);
+    expect(
+      classifyBusinessEmails(
+        [
+          "manager@paramountfinefoods.com",
+          "contact@paramountfinefoods.com",
+          "info@paramountfinefoods.com",
+          "hello@paramountfinefoods.com",
+          "office@paramountfinefoods.com",
+        ],
+        "www.paramountfinefoods.com",
+      )
+        .filter((classification) => classification.status === "unverified")
+        .map((classification) => classification.email),
+    ).toEqual(["info@paramountfinefoods.com"]);
+  });
+});
+
 describe("provider business detail confirmation", () => {
   it("blocks provider outreach and resumes a waiting investigation on confirmation", async () => {
     const admin = await createUser("admin");
@@ -519,8 +601,7 @@ describe("provider business detail confirmation", () => {
       .insert(investigations)
       .values({
         branchId: branch.id,
-        stageDetail:
-          "Waiting for an administrator to confirm business details before contacting the business.",
+        stageDetail: waitingForBusinessDetails,
         paused: true,
       })
       .returning();
@@ -564,6 +645,122 @@ describe("provider business detail confirmation", () => {
       payload: { investigationId: investigation!.id },
     });
     expect(await database.select().from(auditEvents)).toHaveLength(1);
+  });
+
+  it("resumes an investigation paused on the automatic-confirmation fallback", async () => {
+    const admin = await createUser("admin");
+    const { branch } = await createBranch();
+    await database
+      .update(branches)
+      .set({
+        detailsSource: "provider",
+        name: "",
+        address: "",
+        city: "",
+        website: null,
+        phone: null,
+      })
+      .where(eq(branches.id, branch.id));
+    const [investigation] = await database
+      .insert(investigations)
+      .values({
+        branchId: branch.id,
+        stageDetail: waitingForAutomaticBusinessDetails,
+        paused: true,
+      })
+      .returning();
+    const { queue, calls } = queueRecorder();
+    const result = await confirmProviderBusinessDetails(
+      { type: "admin", userId: admin.id },
+      {
+        branchId: branch.id,
+        name: "Confirmed Business",
+        address: "10 First-party Street",
+        city: "Toronto",
+        website: "https://business.example/",
+        phone: "",
+        timezone: "America/Toronto",
+      },
+      queue,
+      database,
+    );
+    expect(result.resumedInvestigationId).toBe(investigation!.id);
+    expect(calls).toContainEqual({
+      name: "investigation.prepare_outreach",
+      payload: { investigationId: investigation!.id },
+    });
+    const [updated] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, investigation!.id));
+    expect(updated).toMatchObject({
+      paused: false,
+      stageDetail: "Business details confirmed. Preparing outreach.",
+    });
+  });
+});
+
+describe("investigation reconciliation", () => {
+  it("caps recent failed runs and resumes only the legacy business-details pause", async () => {
+    const now = new Date("2026-05-01T12:00:00.000Z");
+    const cappedBranch = await createBranch();
+    const capped = await createInvestigation(cappedBranch.branch.id);
+    await database
+      .update(investigations)
+      .set({ status: "checking_public_sources" })
+      .where(eq(investigations.id, capped.id));
+    await database.insert(jobRuns).values(
+      Array.from({ length: 3 }, (_, index) => ({
+        investigationId: capped.id,
+        jobName: "investigation.public_research",
+        idempotencyKey: `failed-research:${capped.id}:${index}`,
+        status: "failed" as const,
+        updatedAt: new Date(now.getTime() - (index + 1) * 60 * 60 * 1000),
+      })),
+    );
+
+    const legacyBranch = await createBranch();
+    const legacy = await createInvestigation(legacyBranch.branch.id);
+    await database
+      .update(investigations)
+      .set({ paused: true, stageDetail: waitingForBusinessDetails })
+      .where(eq(investigations.id, legacy.id));
+    const fallbackBranch = await createBranch();
+    const fallback = await createInvestigation(fallbackBranch.branch.id);
+    await database
+      .update(investigations)
+      .set({ paused: true, stageDetail: waitingForAutomaticBusinessDetails })
+      .where(eq(investigations.id, fallback.id));
+
+    const { queue, calls } = queueRecorder();
+    expect(
+      await reconcileInvestigations({ type: "worker" }, queue, database, now),
+    ).toBe(1);
+    expect(calls).toEqual([
+      {
+        name: "investigation.public_research",
+        payload: { investigationId: legacy.id },
+      },
+    ]);
+    const [updatedLegacy] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, legacy.id));
+    const [untouchedFallback] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, fallback.id));
+    expect(updatedLegacy!.paused).toBe(false);
+    expect(untouchedFallback).toMatchObject({
+      paused: true,
+      stageDetail: waitingForAutomaticBusinessDetails,
+    });
+    const events = await database
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.action, "investigation_auto_resumed"));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.actorType).toBe("worker");
   });
 });
 
@@ -1051,6 +1248,223 @@ describe("webhooks, opt-outs, and outreach", () => {
     expect(endpoint).toBeTruthy();
   });
 
+  it("auto-approves only safe official contacts in the effective auto-send mode", async () => {
+    const originalMode = process.env.OUTREACH_MODE;
+    try {
+      process.env.OUTREACH_MODE = "invalid";
+      expect(effectiveOutreachMode({ mode: "auto_send_approved" })).toBe(
+        "auto_send_approved",
+      );
+      process.env.OUTREACH_MODE = "auto_send_approved";
+      expect(effectiveOutreachMode({ mode: "manual_approval" })).toBe(
+        "auto_send_approved",
+      );
+      await database.insert(outreachSettings).values({
+        id: 1,
+        mode: "manual_approval",
+      });
+      const { queue, calls } = queueRecorder();
+
+      const official = await createBranch();
+      const officialInvestigation = await createInvestigation(
+        official.branch.id,
+      );
+      const [officialEndpoint] = await database
+        .insert(contactEndpoints)
+        .values({
+          branchId: official.branch.id,
+          kind: "email",
+          value: "info@cedar.example.test",
+          status: "unverified",
+          isPersonal: false,
+        })
+        .returning();
+      const officialDraft = await createOutreachDraft(
+        { type: "worker" },
+        officialInvestigation.id,
+        database,
+        queue,
+      );
+      const [autoApprovedEndpoint] = await database
+        .select()
+        .from(contactEndpoints)
+        .where(eq(contactEndpoints.id, officialEndpoint!.id));
+      const [autoApprovedMessage] = await database
+        .select()
+        .from(outreachMessages)
+        .where(eq(outreachMessages.id, officialDraft.messageId!));
+      expect(autoApprovedEndpoint!.status).toBe("approved");
+      expect(autoApprovedMessage!.status).toBe("approved");
+      expect(calls).toContainEqual({
+        name: "outreach.send",
+        payload: { messageId: officialDraft.messageId },
+      });
+      const endpointAudits = await database
+        .select()
+        .from(auditEvents)
+        .where(eq(auditEvents.entityId, officialEndpoint!.id));
+      expect(
+        endpointAudits.some(
+          (event) => event.action === "contact_endpoint_auto_approved",
+        ),
+      ).toBe(true);
+
+      const personal = await createBranch();
+      const personalInvestigation = await createInvestigation(
+        personal.branch.id,
+      );
+      const [personalEndpoint] = await database
+        .insert(contactEndpoints)
+        .values({
+          branchId: personal.branch.id,
+          kind: "email",
+          value: "someone@gmail.com",
+          status: "unverified",
+          isPersonal: true,
+        })
+        .returning();
+      const personalDraft = await createOutreachDraft(
+        { type: "worker" },
+        personalInvestigation.id,
+        database,
+        queue,
+      );
+      expect(personalDraft.messageId).toBeNull();
+      const [unchangedPersonalEndpoint] = await database
+        .select()
+        .from(contactEndpoints)
+        .where(eq(contactEndpoints.id, personalEndpoint!.id));
+      expect(unchangedPersonalEndpoint!.status).toBe("unverified");
+
+      const mismatched = await createBranch();
+      const mismatchedInvestigation = await createInvestigation(
+        mismatched.branch.id,
+      );
+      const [mismatchedEndpoint] = await database
+        .insert(contactEndpoints)
+        .values({
+          branchId: mismatched.branch.id,
+          kind: "email",
+          value: "info@other.example.test",
+          status: "unverified",
+          isPersonal: false,
+          notes: "Email domain does not match the business website.",
+        })
+        .returning();
+      const mismatchedDraft = await createOutreachDraft(
+        { type: "worker" },
+        mismatchedInvestigation.id,
+        database,
+        queue,
+      );
+      const [unchangedMismatchedEndpoint] = await database
+        .select()
+        .from(contactEndpoints)
+        .where(eq(contactEndpoints.id, mismatchedEndpoint!.id));
+      const [mismatchedMessage] = await database
+        .select()
+        .from(outreachMessages)
+        .where(eq(outreachMessages.id, mismatchedDraft.messageId!));
+      expect(unchangedMismatchedEndpoint!.status).toBe("unverified");
+      expect(mismatchedMessage!.status).toBe("draft");
+
+      const refresh = await createBranch();
+      const refreshInvestigation = await createInvestigation(refresh.branch.id);
+      await database
+        .update(investigations)
+        .set({ kind: "refresh" })
+        .where(eq(investigations.id, refreshInvestigation.id));
+      const [refreshEndpoint] = await database
+        .insert(contactEndpoints)
+        .values({
+          branchId: refresh.branch.id,
+          kind: "email",
+          value: "info@refresh.example.test",
+          status: "unverified",
+          isPersonal: false,
+        })
+        .returning();
+      const refreshDraft = await createOutreachDraft(
+        { type: "worker" },
+        refreshInvestigation.id,
+        database,
+        queue,
+      );
+      const [unchangedRefreshEndpoint] = await database
+        .select()
+        .from(contactEndpoints)
+        .where(eq(contactEndpoints.id, refreshEndpoint!.id));
+      const [refreshMessage] = await database
+        .select()
+        .from(outreachMessages)
+        .where(eq(outreachMessages.id, refreshDraft.messageId!));
+      expect(unchangedRefreshEndpoint!.status).toBe("unverified");
+      expect(refreshMessage!.status).toBe("draft");
+      expect(calls.filter((call) => call.name === "outreach.send")).toHaveLength(
+        1,
+      );
+    } finally {
+      if (originalMode === undefined) delete process.env.OUTREACH_MODE;
+      else process.env.OUTREACH_MODE = originalMode;
+    }
+  });
+
+  it("selects approved contacts before unverified contacts and uses oldest first", async () => {
+    const originalMode = process.env.OUTREACH_MODE;
+    process.env.OUTREACH_MODE = "manual_approval";
+    try {
+      const { branch } = await createBranch();
+      const investigation = await createInvestigation(branch.id);
+      const oldest = new Date("2025-01-01T00:00:00.000Z");
+      const next = new Date("2025-01-02T00:00:00.000Z");
+      await database.insert(contactEndpoints).values([
+        {
+          branchId: branch.id,
+          kind: "email",
+          value: "unverified@cedar.example.test",
+          status: "unverified",
+          createdAt: oldest,
+          updatedAt: oldest,
+        },
+        {
+          branchId: branch.id,
+          kind: "email",
+          value: "approved-oldest@cedar.example.test",
+          status: "approved",
+          createdAt: next,
+          updatedAt: next,
+        },
+        {
+          branchId: branch.id,
+          kind: "email",
+          value: "approved-newer@cedar.example.test",
+          status: "approved",
+          createdAt: new Date("2025-01-03T00:00:00.000Z"),
+          updatedAt: new Date("2025-01-03T00:00:00.000Z"),
+        },
+      ]);
+      const { queue } = queueRecorder();
+      await createOutreachDraft(
+        { type: "worker" },
+        investigation.id,
+        database,
+        queue,
+      );
+      const [thread] = await database
+        .select()
+        .from(outreachThreads)
+        .where(eq(outreachThreads.investigationId, investigation.id));
+      const [selectedEndpoint] = await database
+        .select()
+        .from(contactEndpoints)
+        .where(eq(contactEndpoints.id, thread!.contactEndpointId!));
+      expect(selectedEndpoint!.value).toBe("approved-oldest@cedar.example.test");
+    } finally {
+      if (originalMode === undefined) delete process.env.OUTREACH_MODE;
+      else process.env.OUTREACH_MODE = originalMode;
+    }
+  });
+
   it("enforces the maximum outreach count per business", async () => {
     const admin = await createUser("admin");
     const { branch } = await createBranch();
@@ -1089,6 +1503,102 @@ describe("webhooks, opt-outs, and outreach", () => {
       reason: "business-limit",
     });
     expect(await database.select().from(emailOutbox)).toHaveLength(0);
+  });
+
+  it("reschedules without sending when the rolling daily cap is reached", async () => {
+    const originalLimit = process.env.OUTREACH_DAILY_SEND_LIMIT;
+    const originalMode = process.env.OUTREACH_MODE;
+    process.env.OUTREACH_DAILY_SEND_LIMIT = "1";
+    process.env.OUTREACH_MODE = "manual_approval";
+    try {
+      const admin = await createUser("admin");
+      const { branch } = await createBranch();
+      const investigation = await createInvestigation(branch.id);
+      await database.insert(contactEndpoints).values({
+        branchId: branch.id,
+        kind: "email",
+        value: "owner@cedar.example.test",
+        status: "approved",
+      });
+      const queueCalls: Array<{
+        name: string;
+        payload: Record<string, unknown>;
+        options?: { startAfter?: Date | number | string };
+      }> = [];
+      const queue: JobQueue = {
+        async enqueue(name, payload, options) {
+          queueCalls.push({ name, payload, options });
+          return `scheduled-${queueCalls.length}`;
+        },
+      };
+      const firstDraft = await createOutreachDraft(
+        { type: "worker" },
+        investigation.id,
+        database,
+        queue,
+      );
+      await database
+        .update(outreachMessages)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(outreachMessages.id, firstDraft.messageId!));
+      const secondDraft = await createOutreachDraft(
+        { type: "worker" },
+        investigation.id,
+        database,
+        queue,
+      );
+      await approveOutreachMessage(
+        { type: "admin", userId: admin.id },
+        secondDraft.messageId!,
+        queue,
+        database,
+      );
+      const provider: EmailProvider = {
+        send: vi.fn().mockResolvedValue({
+          providerMessageId: "should-not-send",
+          captured: true,
+        }),
+      };
+      const result = await sendOutreach(
+        { type: "worker" },
+        secondDraft.messageId!,
+        database,
+        queue,
+        provider,
+      );
+      expect(result).toMatchObject({ sent: false, reason: "daily-limit" });
+      expect(provider.send).not.toHaveBeenCalled();
+      const [scheduledMessage] = await database
+        .select()
+        .from(outreachMessages)
+        .where(eq(outreachMessages.id, secondDraft.messageId!));
+      expect(scheduledMessage!.status).toBe("scheduled");
+      expect(scheduledMessage!.scheduledFor!.getTime()).toBeGreaterThan(
+        Date.now(),
+      );
+      expect(
+        queueCalls.filter(
+          (call) =>
+            call.name === "outreach.send" &&
+            call.options?.startAfter !== undefined,
+        ),
+      ).toHaveLength(1);
+      const scheduledEnqueue = queueCalls.find(
+        (call) =>
+          call.name === "outreach.send" &&
+          call.options?.startAfter !== undefined,
+      )!;
+      const startAfter = scheduledEnqueue.options!.startAfter!;
+      expect(
+        startAfter instanceof Date ? startAfter.getTime() : startAfter,
+      ).toBe(scheduledMessage!.scheduledFor!.getTime());
+    } finally {
+      if (originalLimit === undefined)
+        delete process.env.OUTREACH_DAILY_SEND_LIMIT;
+      else process.env.OUTREACH_DAILY_SEND_LIMIT = originalLimit;
+      if (originalMode === undefined) delete process.env.OUTREACH_MODE;
+      else process.env.OUTREACH_MODE = originalMode;
+    }
   });
 
   it("fails provider sends once and lets an administrator retry with a new job key", async () => {
@@ -1396,6 +1906,100 @@ describe("AI, prompt injection, and SSRF defenses", () => {
         )
       ).answers.some((answer) => answer.attribute === "supplier"),
     ).toBe(false);
+  });
+
+  it("returns only first-party details supported by page excerpts", async () => {
+    const pages = [
+      {
+        url: "https://business.example.test/",
+        title: "Paramount Fine Foods",
+        text: "Paramount Fine Foods head office at 10 Four Seasons Place, Toronto. Branch at 253 Yonge Street, Toronto.",
+      },
+    ];
+    const response = {
+      name: "Paramount Fine Foods",
+      nameExcerpt: "Paramount Fine Foods",
+      locations: [
+        {
+          address: "10 Four Seasons Place",
+          city: "Toronto",
+          phone: "416-555-0100",
+          addressExcerpt: "head office at 10 Four Seasons Place, Toronto",
+        },
+        {
+          address: "253 Yonge Street",
+          city: "Toronto",
+          phone: null,
+          addressExcerpt: "Branch at 253 Yonge Street, Toronto",
+        },
+        {
+          address: "999 Fake Street",
+          city: "Toronto",
+          addressExcerpt: "999 Fake Street, Toronto",
+        },
+        {
+          address: "555 Yonge Street",
+          city: "Toronto",
+          addressExcerpt: "Branch at 253 Yonge Street, Toronto",
+        },
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(response) } }],
+          }),
+        ),
+      ),
+    );
+    try {
+      const provider = new OpenAICompatibleProvider(
+        "https://ai.example.test/v1",
+        "test-key",
+        "test-model",
+      );
+      expect(await provider.extractBusinessDetails(pages)).toEqual({
+        name: "Paramount Fine Foods",
+        nameExcerpt: "Paramount Fine Foods",
+        locations: [
+          {
+            address: "10 Four Seasons Place",
+            city: "Toronto",
+            phone: "416-555-0100",
+            addressExcerpt: "head office at 10 Four Seasons Place, Toronto",
+          },
+          {
+            address: "253 Yonge Street",
+            city: "Toronto",
+            addressExcerpt: "Branch at 253 Yonge Street, Toronto",
+          },
+        ],
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      ...response,
+                      nameExcerpt: "An ungrounded business name",
+                    }),
+                  },
+                },
+              ],
+            }),
+          ),
+        ),
+      );
+      expect(await provider.extractBusinessDetails(pages)).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("treats AI provider failures as errors rather than fabricated findings", async () => {
@@ -2464,6 +3068,103 @@ describe("remaining requested regressions", () => {
 });
 
 describe("publication notifications and fixture coverage", () => {
+  async function runProviderResearch(
+    googleFormattedAddress: string,
+    extractedDetails: ExtractedBusinessDetails,
+    includeUsableEmail = true,
+  ) {
+    const { business, branch } = await createBranch({
+      businessName: "",
+      branchName: "",
+    });
+    await database
+      .update(branches)
+      .set({
+        detailsSource: "provider",
+        name: "",
+        address: "",
+        city: "",
+        website: null,
+      })
+      .where(eq(branches.id, branch.id));
+    await database
+      .update(businesses)
+      .set({ name: "", website: null })
+      .where(eq(businesses.id, business.id));
+    await database.insert(externalPlaceIds).values({
+      branchId: branch.id,
+      provider: "demo",
+      externalId: `provider-test:${branch.id}`,
+    });
+    const investigation = await createInvestigation(branch.id);
+    const homePage: FetchedPage = {
+      url: "https://paramountfinefoods.com/",
+      contentType: "text/html",
+      title: "Paramount Fine Foods",
+      text: includeUsableEmail
+        ? "Paramount Fine Foods info@paramountfinefoods.com jobs@paramountfinefoods.com someone@gmail.com"
+        : "Paramount Fine Foods",
+      bytes: Buffer.from('<html><a href="/contact">Contact</a></html>'),
+      isPdf: false,
+    };
+    const contactPage: FetchedPage = {
+      url: "https://paramountfinefoods.com/contact",
+      contentType: "text/html",
+      title: "Contact",
+      text: "Visit us at 253 Yonge Street, Toronto.",
+      bytes: Buffer.from("<html></html>"),
+      isPdf: false,
+    };
+    const aiDemo = new DemoAIProvider();
+    let businessDetailsCalls = 0;
+    const aiProvider: AIProvider = {
+      async extractPublicClaims() {
+        return [];
+      },
+      async extractBusinessDetails() {
+        businessDetailsCalls++;
+        return extractedDetails;
+      },
+      async parseReply(text, questions) {
+        return aiDemo.parseReply(text, questions);
+      },
+    };
+    const placesProvider: PlacesProvider = {
+      async searchNearby() {
+        return [];
+      },
+      async getPlace(externalId, level) {
+        expect(externalId).toBe(`provider-test:${branch.id}`);
+        expect(level).toBe("contact");
+        return {
+          id: externalId,
+          displayName: "Google Provider Name",
+          formattedAddress: googleFormattedAddress,
+          location: { latitude: 43.65, longitude: -79.38 },
+          types: ["restaurant"],
+          websiteUri: "https://www.paramountfinefoods.com/",
+          nationalPhoneNumber: "416-555-9999",
+        };
+      },
+    };
+    const fetcher = {
+      async fetch(url: string) {
+        return url.includes("/contact") ? contactPage : homePage;
+      },
+    };
+    const { queue, calls } = queueRecorder();
+    const handler = buildJobHandlers(database, queue, {
+      aiProvider,
+      placesProvider,
+      fetcher,
+    })["investigation.public_research"]!;
+    await handler(
+      { investigationId: investigation.id },
+      { jobId: "provider-research", attempt: 1 },
+    );
+    return { business, branch, investigation, calls, businessDetailsCalls };
+  }
+
   it("deduplicates notifications for every follower", async () => {
     const follower = await createUser("user", "follower@example.test");
     const { branch } = await createBranch();
@@ -2924,6 +3625,165 @@ describe("publication notifications and fixture coverage", () => {
     expect(updated!.budgetFetchesUsed).toBeGreaterThanOrEqual(3);
   });
 
+  it("auto-confirms website details that match the transient provider address", async () => {
+    const fixture = await runProviderResearch(
+      "253 Yonge St, Toronto, ON M5B 1N8, Canada",
+      {
+        name: "Paramount Fine Foods",
+        nameExcerpt: "Paramount Fine Foods",
+        locations: [
+          {
+            address: "10 Four Seasons Place",
+            city: "Toronto",
+            phone: "416-695-8900",
+            addressExcerpt: "Head office at 10 Four Seasons Place, Toronto.",
+          },
+          {
+            address: "253 Yonge Street, Toronto",
+            city: "Toronto",
+            phone: "416-555-0100",
+            addressExcerpt: "Visit us at 253 Yonge Street, Toronto.",
+          },
+        ],
+      },
+    );
+    const [updatedBranch] = await database
+      .select()
+      .from(branches)
+      .where(eq(branches.id, fixture.branch.id));
+    const [updatedBusiness] = await database
+      .select()
+      .from(businesses)
+      .where(eq(businesses.id, fixture.business.id));
+    const endpoints = await database
+      .select()
+      .from(contactEndpoints)
+      .where(eq(contactEndpoints.branchId, fixture.branch.id));
+    const [investigation] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, fixture.investigation.id));
+    expect(updatedBranch).toMatchObject({
+      detailsSource: "first_party",
+      name: "Paramount Fine Foods",
+      address: "253 Yonge Street, Toronto",
+      city: "Toronto",
+      phone: "416-555-0100",
+      website: "https://paramountfinefoods.com/",
+    });
+    expect(updatedBusiness).toMatchObject({
+      name: "Paramount Fine Foods",
+      website: "https://paramountfinefoods.com/",
+    });
+    expect(updatedBranch!.name).not.toBe("Google Provider Name");
+    expect(updatedBranch!.address).not.toBe(
+      "253 Yonge St, Toronto, ON M5B 1N8, Canada",
+    );
+    expect(investigation!.budgetAiCallsUsed).toBe(2);
+    expect(
+      Object.fromEntries(endpoints.map((endpoint) => [endpoint.value, endpoint.status])),
+    ).toEqual({
+      "info@paramountfinefoods.com": "unverified",
+      "jobs@paramountfinefoods.com": "ambiguous",
+      "someone@gmail.com": "ambiguous",
+    });
+    expect(fixture.calls).toContainEqual({
+      name: "investigation.prepare_outreach",
+      payload: { investigationId: fixture.investigation.id },
+    });
+    const events = await database
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.entityId, fixture.branch.id));
+    expect(events.some((event) => event.action === "provider_business_details_auto_confirmed")).toBe(
+      true,
+    );
+  });
+
+  it("keeps provider identity details private when website and provider addresses differ", async () => {
+    const fixture = await runProviderResearch(
+      "255 Yonge St, Toronto, ON M5B 1N8, Canada",
+      {
+        name: "Paramount Fine Foods",
+        nameExcerpt: "Paramount Fine Foods",
+        locations: [
+          {
+            address: "253 Yonge Street",
+            city: "Toronto",
+            addressExcerpt: "Visit us at 253 Yonge Street, Toronto.",
+          },
+        ],
+      },
+    );
+    const [updatedBranch] = await database
+      .select()
+      .from(branches)
+      .where(eq(branches.id, fixture.branch.id));
+    const [updatedBusiness] = await database
+      .select()
+      .from(businesses)
+      .where(eq(businesses.id, fixture.business.id));
+    const [investigation] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, fixture.investigation.id));
+    expect(updatedBranch).toMatchObject({
+      detailsSource: "provider",
+      name: "",
+      address: "",
+      city: "",
+      website: null,
+    });
+    expect(updatedBusiness).toMatchObject({ name: "", website: null });
+    expect(investigation).toMatchObject({
+      paused: true,
+      stageDetail: waitingForAutomaticBusinessDetails,
+    });
+    expect(
+      fixture.calls.some(
+        (call) => call.name === "investigation.prepare_outreach",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not wait for business details when no usable email exists", async () => {
+    const fixture = await runProviderResearch(
+      "253 Yonge St, Toronto, ON M5B 1N8, Canada",
+      {
+        name: "Paramount Fine Foods",
+        nameExcerpt: "Paramount Fine Foods",
+        locations: [
+          {
+            address: "253 Yonge Street",
+            city: "Toronto",
+            addressExcerpt: "Visit us at 253 Yonge Street, Toronto.",
+          },
+        ],
+      },
+      false,
+    );
+    const [investigation] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, fixture.investigation.id));
+    expect(fixture.businessDetailsCalls).toBe(0);
+    expect(investigation).toMatchObject({
+      paused: false,
+      status: "reviewing_evidence",
+      stageDetail: "No usable business contact found.",
+      budgetAiCallsUsed: 1,
+    });
+    expect(fixture.calls).toContainEqual({
+      name: "investigation.evidence_review",
+      payload: { investigationId: fixture.investigation.id },
+    });
+    expect(
+      fixture.calls.some(
+        (call) => call.name === "investigation.prepare_outreach",
+      ),
+    ).toBe(false);
+  });
+
   it("uses a transient provider website and waits for business confirmation", async () => {
     const originalProvider = process.env.PLACES_PROVIDER;
     process.env.PLACES_PROVIDER = "demo";
@@ -2974,8 +3834,7 @@ describe("publication notifications and fixture coverage", () => {
         .where(eq(businesses.id, business.id));
       expect(updatedInvestigation).toMatchObject({
         paused: true,
-        stageDetail:
-          "Waiting for an administrator to confirm business details before contacting the business.",
+        stageDetail: waitingForAutomaticBusinessDetails,
       });
       expect(updatedBranch!.website).toBeNull();
       expect(updatedBusiness!.website).toBeNull();
