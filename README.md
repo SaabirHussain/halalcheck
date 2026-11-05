@@ -22,6 +22,28 @@ Open <http://localhost:3000>. Run the durable worker in another terminal with
 `npm run worker`. PostgreSQL 16 is exposed on port 5432; compose initializes
 both `halalcheck` and `halalcheck_test`.
 
+## Deploying to Railway
+
+Use one Railway service for the Next.js app and worker, plus a Railway Postgres
+service. `railway.json` runs migrations before startup and checks `/api/health`.
+Mount a volume at `/data` and set `STORAGE_DIR=/data/storage`.
+
+Set `DATABASE_URL` to the Postgres service reference (for example,
+`${{Postgres.DATABASE_URL}}`), `APP_URL` to the public HTTPS URL, and
+`DEMO_MODE=false`. Configure `PLACES_PROVIDER`, `GEOCODER_PROVIDER`,
+`AI_PROVIDER`, `EMAIL_PROVIDER`, and `PUSH_PROVIDER` with the matching
+credentials when those integrations are approved; do not use the demo Places
+provider for real listings. Keep `OUTREACH_ALLOW_REAL_SEND=false` until
+Mailgun is configured and reviewed.
+
+After the first deployment has run migrations, set `ADMIN_EMAIL`,
+`ADMIN_PASSWORD` (12–128 characters), and optionally `ADMIN_NAME` in the
+service environment, then run `npm run admin:create` from the service context.
+The command creates an admin or promotes the matching account without logging
+the password. Set a Railway usage limit in the project billing settings to
+control Hobby-plan spend. Do not deploy real provider credentials or enable
+real sends until their setup and usage limits are reviewed.
+
 ## Demo accounts
 
 - `admin@demo.halalcheck.test` / `DemoAdmin!2026`
@@ -116,7 +138,9 @@ defaults to fictional demo data and captured email.
 | `npm run dev`         | Start the Next.js development server.                 |
 | `npm run build`       | Build the production application.                     |
 | `npm run start`       | Serve a production build.                             |
+| `npm run start:all`   | Serve the app and run its worker in one process.       |
 | `npm run worker`      | Start the pg-boss queue worker and schedules.         |
+| `npm run admin:create` | Create or promote the initial admin from environment. |
 | `npm run lint`        | Run ESLint.                                           |
 | `npm run typecheck`   | Run TypeScript without emitting files.                |
 | `npm test`            | Run Vitest unit and PostgreSQL integration tests.     |

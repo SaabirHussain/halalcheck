@@ -12,9 +12,11 @@ export function EmailNotificationsForm({ enabled }: { enabled: boolean }) {
         />
         <span className="font-medium">Email me when research is published</span>
       </label>
-      <p className="rounded-xl bg-info-soft p-3 text-sm text-info">
-        Demo mode: emails are captured, never sent.
-      </p>
+      {process.env.DEMO_MODE === "true" ? (
+        <p className="rounded-xl bg-info-soft p-3 text-sm text-info">
+          Demo mode: emails are captured, never sent.
+        </p>
+      ) : null}
       <button
         className="min-h-11 w-fit rounded-xl bg-accent px-4 font-semibold text-white"
         type="submit"

@@ -201,7 +201,7 @@ export default async function InvestigationDetail({
           ) : null}
         </div>
       </header>
-      {simulated ? (
+      {process.env.DEMO_MODE === "true" && simulated ? (
         <p
           className="rounded-xl border border-info/20 bg-info-soft p-3 text-sm"
           role="status"
@@ -482,7 +482,9 @@ export default async function InvestigationDetail({
           </div>
         ))}
       </section>
-      <ReplySimulator investigationId={id} />
+      {process.env.DEMO_MODE === "true" ? (
+        <ReplySimulator investigationId={id} />
+      ) : null}
     </section>
   );
 }
