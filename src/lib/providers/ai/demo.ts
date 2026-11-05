@@ -153,6 +153,10 @@ export class DemoAIProvider implements AIProvider {
     return claims;
   }
 
+  async extractBusinessDetails() {
+    return null;
+  }
+
   async parseReply(
     text: string,
     openQuestions: OpenQuestion[],

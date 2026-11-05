@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import PgBoss from "pg-boss";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   investigations,
@@ -23,8 +23,23 @@ export class PgBossQueue implements JobQueue {
   ) {
     const idempotencyKey =
       options.idempotencyKey ??
-      options.singletonKey ??
-      `${name}:${randomUUID()}`;
+      (options.singletonKey
+        ? `${options.singletonKey}:${randomUUID()}`
+        : `${name}:${randomUUID()}`);
+    if (options.singletonKey && !options.idempotencyKey) {
+      const [activeRun] = await this.database
+        .select({ id: jobRuns.id })
+        .from(jobRuns)
+        .where(
+          and(
+            eq(jobRuns.jobName, name),
+            eq(jobRuns.singletonKey, options.singletonKey),
+            inArray(jobRuns.status, ["queued", "running"]),
+          ),
+        )
+        .limit(1);
+      if (activeRun) return null;
+    }
     let investigationId =
       typeof payload.investigationId === "string"
         ? payload.investigationId
@@ -47,6 +62,7 @@ export class PgBossQueue implements JobQueue {
         investigationId,
         jobName: name,
         idempotencyKey,
+        singletonKey: options.singletonKey ?? null,
         payload,
         status: "queued",
       })
@@ -58,8 +74,6 @@ export class PgBossQueue implements JobQueue {
       jobId = await this.boss.send(name, payload, {
         retryLimit: 3,
         retryBackoff: true,
-        singletonKey: options.singletonKey,
-        singletonSeconds: options.singletonKey ? 120 : undefined,
         startAfter: options.startAfter,
       });
     } catch (error) {

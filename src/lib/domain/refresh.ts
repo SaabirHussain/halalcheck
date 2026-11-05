@@ -25,8 +25,10 @@ import type { JobQueue } from "@/lib/jobs/types";
 import { getPlacesProvider } from "@/lib/providers/places";
 import type { PlacesProvider } from "@/lib/providers/places";
 import { consumeGoogleDetailsLimit } from "@/lib/providers/places/limits";
+import { writeAudit } from "@/lib/domain/audit";
+import { waitingForBusinessDetails } from "@/lib/domain/admin";
 import type { Actor } from "./actor";
-import { stageQueue } from "./investigations";
+import { stageQueue, stageSingletonKey } from "./investigations";
 
 type Database = typeof defaultDb;
 
@@ -211,20 +213,69 @@ export async function reconcileInvestigations(
   actor: Actor,
   queue: JobQueue,
   database: Database = defaultDb,
+  now = new Date(),
 ) {
   if (actor.type !== "worker" && actor.type !== "system")
     throw new Error("Worker access required.");
+  await database
+    .update(jobRuns)
+    .set({
+      status: "failed",
+      lastError: "Stale run: worker did not finish.",
+      finishedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        isNotNull(jobRuns.singletonKey),
+        inArray(jobRuns.status, ["queued", "running"]),
+        lt(jobRuns.updatedAt, new Date(now.getTime() - 30 * 60_000)),
+      ),
+    );
   const active = await database
     .select({
       id: investigations.id,
       status: investigations.status,
       paused: investigations.paused,
+      stageDetail: investigations.stageDetail,
     })
     .from(investigations)
     .where(eq(investigations.isActive, true));
   let enqueued = 0;
   for (const investigation of active) {
-    if (investigation.paused) continue;
+    if (investigation.paused) {
+      if (investigation.stageDetail !== waitingForBusinessDetails) continue;
+      const resumed = await database.transaction(async (tx) => {
+        const [row] = await tx
+          .update(investigations)
+          .set({ paused: false, updatedAt: now })
+          .where(
+            and(
+              eq(investigations.id, investigation.id),
+              eq(investigations.isActive, true),
+              eq(investigations.paused, true),
+              eq(investigations.stageDetail, waitingForBusinessDetails),
+            ),
+          )
+          .returning({ id: investigations.id });
+        if (!row) return false;
+        await writeAudit(tx, {
+          actorType: actor.type,
+          action: "investigation_auto_resumed",
+          entityType: "investigation",
+          entityId: row.id,
+        });
+        return true;
+      });
+      if (!resumed) continue;
+      await queue.enqueue(
+        "investigation.public_research",
+        { investigationId: investigation.id },
+        { singletonKey: `public_research:${investigation.id}` },
+      );
+      enqueued++;
+      continue;
+    }
     const queueName = stageQueue(investigation.status);
     if (!queueName) continue;
     const activeJob = await database
@@ -239,11 +290,27 @@ export async function reconcileInvestigations(
       )
       .limit(1);
     if (activeJob.length) continue;
+    const recentFailures = await database
+      .select({ id: jobRuns.id })
+      .from(jobRuns)
+      .where(
+        and(
+          eq(jobRuns.investigationId, investigation.id),
+          eq(jobRuns.jobName, queueName),
+          eq(jobRuns.status, "failed"),
+          gte(
+            jobRuns.updatedAt,
+            new Date(now.getTime() - 24 * 60 * 60 * 1000),
+          ),
+        ),
+      )
+      .limit(3);
+    if (recentFailures.length >= 3) continue;
     await queue.enqueue(
       queueName,
       { investigationId: investigation.id },
       {
-        singletonKey: `${queueName}:${investigation.id}`,
+        singletonKey: stageSingletonKey(queueName, investigation.id),
       },
     );
     enqueued++;

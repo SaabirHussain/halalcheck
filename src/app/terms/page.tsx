@@ -55,8 +55,9 @@ export default function TermsPage() {
             retained; place coordinates are cached for no more than 30
             consecutive days; other Google Places content is not stored.
             OpenAI may process public source material and business responses
-            for evidence analysis. Mailgun may process email addresses and
-            message content when email features are enabled.
+            for evidence analysis. Our email provider (Resend) may process
+            email addresses and message content when email features are
+            enabled.
           </p>
           <p className="mt-2">
             Your use of Google Maps Platform content is subject to{" "}

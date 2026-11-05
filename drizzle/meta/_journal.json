@@ -36,6 +36,13 @@
       "when": 1793892348200,
       "tag": "0004_sour_maximus",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793906989251,
+      "tag": "0005_foamy_lila_cheney",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
+import { Webhook } from "svix";
 import { Response as UndiciResponse, fetch as undiciFetch } from "undici";
 import type PgBoss from "pg-boss";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
@@ -56,9 +57,12 @@ import {
   ingestInboundEmail,
 } from "@/lib/domain/inbound-email";
 import { parseInboundReply, reviewEvidence } from "@/lib/domain/claims";
+import { addressesMatch } from "@/lib/domain/address-match";
+import { classifyBusinessEmails } from "@/lib/domain/contact-classification";
 import {
   approveOutreachMessage,
   createOutreachDraft,
+  effectiveOutreachMode,
   nextBusinessWindow,
   retryFailedOutreachSend,
   sendOutreach,
@@ -69,10 +73,16 @@ import { notifyFollowers } from "@/lib/domain/notifications";
 import { getPublicBranch, listPublicBranches } from "@/lib/domain/public";
 import {
   purgeExpiredProviderCache,
+  reconcileInvestigations,
   refreshScan,
 } from "@/lib/domain/refresh";
 import { searchAndCacheProviderPlaces } from "@/lib/domain/provider-places";
-import { confirmProviderBusinessDetails } from "@/lib/domain/admin";
+import { selectSameSiteLinks } from "@/lib/domain/site-links";
+import {
+  confirmProviderBusinessDetails,
+  waitingForAutomaticBusinessDetails,
+  waitingForBusinessDetails,
+} from "@/lib/domain/admin";
 import { DemoAIProvider } from "@/lib/providers/ai/demo";
 import {
   OpenAICompatibleProvider,
@@ -80,10 +90,17 @@ import {
 } from "@/lib/providers/ai/openai";
 import {
   isPublicIp,
+  pinnedLookup,
   SSRFSafeFetcher,
   validateFetchUrl,
 } from "@/lib/providers/fetcher";
+import { htmlToText } from "@/lib/providers/fetcher/safe";
 import { verifyMailgunSignature } from "@/lib/providers/email/mailgun";
+import { ResendEmailProvider } from "@/lib/providers/email/resend";
+import {
+  handleResendWebhook,
+  stripQuotedReply,
+} from "@/lib/http/resend-webhook";
 import { DemoPushProvider } from "@/lib/providers/push/demo";
 import { handlePushDevicesRequest } from "@/lib/http/push-devices";
 import { InlineJobQueue } from "@/lib/jobs/memory";
@@ -100,6 +117,12 @@ import {
 import { authenticateUser } from "@/lib/auth/service";
 import { hashSessionToken, revokeSessionByToken } from "@/lib/auth/sessions";
 import type { EmailProvider } from "@/lib/providers/email/types";
+import type {
+  AIProvider,
+  ExtractedBusinessDetails,
+} from "@/lib/providers/ai/types";
+import type { FetchedPage } from "@/lib/providers/fetcher/types";
+import type { PlacesProvider } from "@/lib/providers/places/types";
 
 process.env.EMAIL_PROVIDER = "demo";
 process.env.OUTREACH_ALLOW_REAL_SEND = "false";
@@ -195,6 +218,26 @@ async function createInvestigation(branchId: string, userId?: string) {
     .values({ branchId, createdBy: userId ?? null })
     .returning();
   return investigation!;
+}
+
+const resendTestSecret = `whsec_${Buffer.from("resend-test-signing-secret").toString("base64")}`;
+
+function signedResendRequest(
+  body: string,
+  id: string,
+  timestamp = new Date(),
+) {
+  const signature = new Webhook(resendTestSecret).sign(id, timestamp, body);
+  return new Request("http://localhost:3000/api/webhooks/resend", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "svix-id": id,
+      "svix-timestamp": String(Math.floor(timestamp.getTime() / 1000)),
+      "svix-signature": signature,
+    },
+    body,
+  });
 }
 
 beforeAll(async () => {
@@ -469,6 +512,74 @@ describe("public discovery", () => {
   });
 });
 
+describe("business detail matching and contact classification", () => {
+  it("matches address number and street name while normalizing common forms", () => {
+    expect(
+      addressesMatch(
+        "253 Yonge St, Toronto",
+        "253 Yonge Street, Toronto, ON M5B 1N8, Canada",
+      ),
+    ).toBe(true);
+    expect(addressesMatch("253 W Yonge St", "253 West Yonge Street")).toBe(
+      true,
+    );
+    expect(addressesMatch("255 Yonge St", "253 Yonge Street")).toBe(false);
+    expect(addressesMatch("253 Bay St", "253 Yonge Street")).toBe(false);
+    expect(addressesMatch("Yonge Street, Toronto", "253 Yonge Street")).toBe(
+      false,
+    );
+  });
+
+  it("prefers one matching generic contact and marks every other address ambiguous", () => {
+    expect(
+      classifyBusinessEmails(
+        [
+          "info@paramountfinefoods.com",
+          "jobs@paramountfinefoods.com",
+          "someone@gmail.com",
+        ],
+        "www.paramountfinefoods.com",
+      ),
+    ).toEqual([
+      {
+        email: "info@paramountfinefoods.com",
+        status: "unverified",
+        isPersonal: false,
+        domainMismatch: false,
+        notes: null,
+      },
+      {
+        email: "jobs@paramountfinefoods.com",
+        status: "ambiguous",
+        isPersonal: true,
+        domainMismatch: false,
+        notes: null,
+      },
+      {
+        email: "someone@gmail.com",
+        status: "ambiguous",
+        isPersonal: true,
+        domainMismatch: true,
+        notes: "Email domain does not match the business website.",
+      },
+    ]);
+    expect(
+      classifyBusinessEmails(
+        [
+          "manager@paramountfinefoods.com",
+          "contact@paramountfinefoods.com",
+          "info@paramountfinefoods.com",
+          "hello@paramountfinefoods.com",
+          "office@paramountfinefoods.com",
+        ],
+        "www.paramountfinefoods.com",
+      )
+        .filter((classification) => classification.status === "unverified")
+        .map((classification) => classification.email),
+    ).toEqual(["info@paramountfinefoods.com"]);
+  });
+});
+
 describe("provider business detail confirmation", () => {
   it("blocks provider outreach and resumes a waiting investigation on confirmation", async () => {
     const admin = await createUser("admin");
@@ -492,8 +603,7 @@ describe("provider business detail confirmation", () => {
       .insert(investigations)
       .values({
         branchId: branch.id,
-        stageDetail:
-          "Waiting for an administrator to confirm business details before contacting the business.",
+        stageDetail: waitingForBusinessDetails,
         paused: true,
       })
       .returning();
@@ -537,6 +647,409 @@ describe("provider business detail confirmation", () => {
       payload: { investigationId: investigation!.id },
     });
     expect(await database.select().from(auditEvents)).toHaveLength(1);
+  });
+
+  it("resumes an investigation paused on the automatic-confirmation fallback", async () => {
+    const admin = await createUser("admin");
+    const { branch } = await createBranch();
+    await database
+      .update(branches)
+      .set({
+        detailsSource: "provider",
+        name: "",
+        address: "",
+        city: "",
+        website: null,
+        phone: null,
+      })
+      .where(eq(branches.id, branch.id));
+    const [investigation] = await database
+      .insert(investigations)
+      .values({
+        branchId: branch.id,
+        stageDetail: waitingForAutomaticBusinessDetails,
+        paused: true,
+      })
+      .returning();
+    const { queue, calls } = queueRecorder();
+    const result = await confirmProviderBusinessDetails(
+      { type: "admin", userId: admin.id },
+      {
+        branchId: branch.id,
+        name: "Confirmed Business",
+        address: "10 First-party Street",
+        city: "Toronto",
+        website: "https://business.example/",
+        phone: "",
+        timezone: "America/Toronto",
+      },
+      queue,
+      database,
+    );
+    expect(result.resumedInvestigationId).toBe(investigation!.id);
+    expect(calls).toContainEqual({
+      name: "investigation.prepare_outreach",
+      payload: { investigationId: investigation!.id },
+    });
+    const [updated] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, investigation!.id));
+    expect(updated).toMatchObject({
+      paused: false,
+      stageDetail: "Business details confirmed. Preparing outreach.",
+    });
+  });
+});
+
+describe("investigation reconciliation", () => {
+  it("caps recent failed runs and resumes only the legacy business-details pause", async () => {
+    const now = new Date("2026-05-01T12:00:00.000Z");
+    const cappedBranch = await createBranch();
+    const capped = await createInvestigation(cappedBranch.branch.id);
+    await database
+      .update(investigations)
+      .set({ status: "checking_public_sources" })
+      .where(eq(investigations.id, capped.id));
+    await database.insert(jobRuns).values(
+      Array.from({ length: 3 }, (_, index) => ({
+        investigationId: capped.id,
+        jobName: "investigation.public_research",
+        idempotencyKey: `failed-research:${capped.id}:${index}`,
+        status: "failed" as const,
+        updatedAt: new Date(now.getTime() - (index + 1) * 60 * 60 * 1000),
+      })),
+    );
+
+    const legacyBranch = await createBranch();
+    const legacy = await createInvestigation(legacyBranch.branch.id);
+    await database
+      .update(investigations)
+      .set({ paused: true, stageDetail: waitingForBusinessDetails })
+      .where(eq(investigations.id, legacy.id));
+    const fallbackBranch = await createBranch();
+    const fallback = await createInvestigation(fallbackBranch.branch.id);
+    await database
+      .update(investigations)
+      .set({ paused: true, stageDetail: waitingForAutomaticBusinessDetails })
+      .where(eq(investigations.id, fallback.id));
+
+    const { queue, calls } = queueRecorder();
+    expect(
+      await reconcileInvestigations({ type: "worker" }, queue, database, now),
+    ).toBe(1);
+    expect(calls).toEqual([
+      {
+        name: "investigation.public_research",
+        payload: { investigationId: legacy.id },
+      },
+    ]);
+    const [updatedLegacy] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, legacy.id));
+    const [untouchedFallback] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, fallback.id));
+    expect(updatedLegacy!.paused).toBe(false);
+    expect(untouchedFallback).toMatchObject({
+      paused: true,
+      stageDetail: waitingForAutomaticBusinessDetails,
+    });
+    const events = await database
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.action, "investigation_auto_resumed"));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.actorType).toBe("worker");
+  });
+
+  it("re-enqueues a succeeded stage while its investigation remains active", async () => {
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id);
+    await database
+      .update(investigations)
+      .set({ status: "checking_public_sources", paused: false })
+      .where(eq(investigations.id, investigation.id));
+    const jobName = "investigation.public_research";
+    const singletonKey = `public_research:${investigation.id}`;
+    await database.insert(jobRuns).values({
+      investigationId: investigation.id,
+      jobName,
+      idempotencyKey: `${singletonKey}:previous`,
+      singletonKey,
+      status: "succeeded",
+    });
+
+    let sent = 0;
+    const send = vi.fn(async () => `reconcile-job-${++sent}`);
+    const queue = new DurableQueue({ send } as unknown as PgBoss, database);
+    expect(
+      await reconcileInvestigations(
+        { type: "worker" },
+        queue,
+        database,
+        new Date(),
+      ),
+    ).toBe(1);
+    const runs = await database
+      .select()
+      .from(jobRuns)
+      .where(
+        and(
+          eq(jobRuns.investigationId, investigation.id),
+          eq(jobRuns.jobName, jobName),
+        ),
+      );
+    expect(runs).toHaveLength(2);
+    expect(runs.map((run) => run.status).sort()).toEqual([
+      "queued",
+      "succeeded",
+    ]);
+    expect(
+      runs
+        .find((run) => run.status === "queued")
+        ?.idempotencyKey.startsWith(`${singletonKey}:`),
+    ).toBe(true);
+    expect(
+      runs.find((run) => run.status === "queued")?.singletonKey,
+    ).toBe(singletonKey);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares public-research singleton keys between reconcile and other callers", async () => {
+    const { branch: existingBranch } = await createBranch();
+    const existing = await createInvestigation(existingBranch.id);
+    const { branch: reconciledBranch } = await createBranch();
+    const reconciled = await createInvestigation(reconciledBranch.id);
+    for (const investigation of [existing, reconciled]) {
+      await database
+        .update(investigations)
+        .set({ status: "checking_public_sources", paused: false })
+        .where(eq(investigations.id, investigation.id));
+    }
+
+    let sent = 0;
+    const send = vi.fn(async () => `public-research-${++sent}`);
+    const queue = new DurableQueue({ send } as unknown as PgBoss, database);
+    const existingKey = `public_research:${existing.id}`;
+    expect(
+      await queue.enqueue(
+        "investigation.public_research",
+        { investigationId: existing.id },
+        { singletonKey: existingKey },
+      ),
+    ).toBe("public-research-1");
+
+    const [existingRun] = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.investigationId, existing.id));
+    expect(existingRun!.singletonKey).toBe(existingKey);
+    expect(
+      await reconcileInvestigations(
+        { type: "worker" },
+        queue,
+        database,
+        new Date(),
+      ),
+    ).toBe(1);
+
+    const reconciledKey = `public_research:${reconciled.id}`;
+    const reconciledRuns = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.investigationId, reconciled.id));
+    expect(reconciledRuns).toHaveLength(1);
+    expect(reconciledRuns[0]!.singletonKey).toBe(reconciledKey);
+    expect(
+      await queue.enqueue(
+        "investigation.public_research",
+        { investigationId: reconciled.id },
+        { singletonKey: reconciledKey },
+      ),
+    ).toBeNull();
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails stale singleton runs and re-enqueues the stage in one pass", async () => {
+    const now = new Date("2026-05-02T12:00:00.000Z");
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id);
+    await database
+      .update(investigations)
+      .set({ status: "checking_public_sources", paused: false })
+      .where(eq(investigations.id, investigation.id));
+    const staleAt = new Date(now.getTime() - 31 * 60_000);
+    const singletonKey = `public_research:${investigation.id}`;
+    const [staleRun] = await database
+      .insert(jobRuns)
+      .values({
+        investigationId: investigation.id,
+        jobName: "investigation.public_research",
+        idempotencyKey: `stale-public-research:${investigation.id}`,
+        singletonKey,
+        status: "running",
+        updatedAt: staleAt,
+      })
+      .returning();
+    let sent = 0;
+    const send = vi.fn(async () => `reconciled-job-${++sent}`);
+    const queue = new DurableQueue({ send } as unknown as PgBoss, database);
+
+    expect(
+      await reconcileInvestigations({ type: "worker" }, queue, database, now),
+    ).toBe(1);
+
+    const runs = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.investigationId, investigation.id));
+    const failedRun = runs.find((run) => run.id === staleRun!.id);
+    const queuedRun = runs.find((run) => run.status === "queued");
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      lastError: "Stale run: worker did not finish.",
+      finishedAt: now,
+      updatedAt: now,
+    });
+    expect(queuedRun!.singletonKey).toBe(singletonKey);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves fresh running singleton runs untouched", async () => {
+    const now = new Date("2026-05-02T12:00:00.000Z");
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id);
+    await database
+      .update(investigations)
+      .set({ status: "checking_public_sources", paused: false })
+      .where(eq(investigations.id, investigation.id));
+    const updatedAt = new Date(now.getTime() - 29 * 60_000);
+    const [run] = await database
+      .insert(jobRuns)
+      .values({
+        investigationId: investigation.id,
+        jobName: "investigation.public_research",
+        idempotencyKey: `fresh-public-research:${investigation.id}`,
+        singletonKey: `public_research:${investigation.id}`,
+        status: "running",
+        updatedAt,
+      })
+      .returning();
+    const send = vi.fn(async () => "unexpected-job");
+    const queue = new DurableQueue({ send } as unknown as PgBoss, database);
+
+    expect(
+      await reconcileInvestigations({ type: "worker" }, queue, database, now),
+    ).toBe(0);
+
+    const [unchanged] = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.id, run!.id));
+    expect(unchanged).toMatchObject({
+      status: "running",
+      updatedAt,
+      lastError: null,
+      finishedAt: null,
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not stale-fail active runs without a singleton key", async () => {
+    const now = new Date("2026-05-02T12:00:00.000Z");
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id);
+    await database
+      .update(investigations)
+      .set({ status: "checking_public_sources", paused: false })
+      .where(eq(investigations.id, investigation.id));
+    const updatedAt = new Date(now.getTime() - 60 * 60_000);
+    const [run] = await database
+      .insert(jobRuns)
+      .values({
+        investigationId: investigation.id,
+        jobName: "investigation.public_research",
+        idempotencyKey: `no-singleton-public-research:${investigation.id}`,
+        singletonKey: null,
+        status: "running",
+        updatedAt,
+      })
+      .returning();
+    const send = vi.fn(async () => "unexpected-job");
+    const queue = new DurableQueue({ send } as unknown as PgBoss, database);
+
+    expect(
+      await reconcileInvestigations({ type: "worker" }, queue, database, now),
+    ).toBe(0);
+
+    const [unchanged] = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.id, run!.id));
+    expect(unchanged).toMatchObject({
+      singletonKey: null,
+      status: "running",
+      updatedAt,
+      lastError: null,
+      finishedAt: null,
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("resumes when a succeeded run already used the same stage singleton key", async () => {
+    const admin = await createUser("admin");
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id);
+    const jobName = "investigation.public_research";
+    const singletonKey = `public_research:${investigation.id}`;
+    await database
+      .update(investigations)
+      .set({ status: "checking_public_sources", paused: true })
+      .where(eq(investigations.id, investigation.id));
+    await database.insert(jobRuns).values({
+      investigationId: investigation.id,
+      jobName,
+      idempotencyKey: `${singletonKey}:previous`,
+      singletonKey,
+      status: "succeeded",
+    });
+
+    let sent = 0;
+    const send = vi.fn(async () => `resume-job-${++sent}`);
+    const queue = new DurableQueue({ send } as unknown as PgBoss, database);
+    await resumeInvestigation(
+      { type: "admin", userId: admin.id },
+      investigation.id,
+      queue,
+      database,
+    );
+
+    const [updated] = await database
+      .select({ paused: investigations.paused })
+      .from(investigations)
+      .where(eq(investigations.id, investigation.id));
+    const runs = await database
+      .select()
+      .from(jobRuns)
+      .where(
+        and(
+          eq(jobRuns.investigationId, investigation.id),
+          eq(jobRuns.jobName, jobName),
+        ),
+      );
+    expect(updated!.paused).toBe(false);
+    expect(runs).toHaveLength(2);
+    expect(runs.map((run) => run.status).sort()).toEqual([
+      "queued",
+      "succeeded",
+    ]);
+    expect(
+      runs.find((run) => run.status === "queued")?.singletonKey,
+    ).toBe(singletonKey);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -623,33 +1136,90 @@ describe("research requests and authorization", () => {
     expect(await database.select().from(claims)).toHaveLength(0);
   });
 
-  it("deduplicates durable job runs before enqueueing with pg-boss", async () => {
-    const send = vi.fn().mockResolvedValue("captured-pgboss-id");
+  it("deduplicates active singleton runs and permanently deduplicates idempotency keys", async () => {
+    let sent = 0;
+    const send = vi.fn(async () => `captured-pgboss-id-${++sent}`);
     const queue = new DurableQueue({ send } as unknown as PgBoss, database);
     const options = { idempotencyKey: "integration:job-once" };
     expect(
       await queue.enqueue("test.idempotency", { safe: true }, options),
-    ).toBe("captured-pgboss-id");
+    ).toBe("captured-pgboss-id-1");
     expect(
       await queue.enqueue("test.idempotency", { safe: true }, options),
     ).toBeNull();
     expect(send).toHaveBeenCalledTimes(1);
+    const singletonKey = `integration:singleton:${randomUUID()}`;
     expect(
       await queue.enqueue(
         "test.singleton",
         { safe: true },
-        { singletonKey: "permanent-singleton" },
+        { singletonKey },
       ),
-    ).toBe("captured-pgboss-id");
+    ).toBe("captured-pgboss-id-2");
     expect(
       await queue.enqueue(
         "test.singleton",
         { safe: true },
-        { singletonKey: "permanent-singleton" },
+        { singletonKey },
       ),
     ).toBeNull();
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(await database.select().from(jobRuns)).toHaveLength(2);
+    const [queuedRun] = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.singletonKey, singletonKey));
+    expect(queuedRun!.status).toBe("queued");
+    await database
+      .update(jobRuns)
+      .set({ status: "running" })
+      .where(eq(jobRuns.id, queuedRun!.id));
+    expect(
+      await queue.enqueue(
+        "test.singleton",
+        { safe: true },
+        { singletonKey },
+      ),
+    ).toBeNull();
+    await database
+      .update(jobRuns)
+      .set({ status: "succeeded" })
+      .where(eq(jobRuns.id, queuedRun!.id));
+    expect(
+      await queue.enqueue(
+        "test.singleton",
+        { safe: true },
+        { singletonKey },
+      ),
+    ).toBe("captured-pgboss-id-3");
+    const singletonRuns = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.singletonKey, singletonKey));
+    expect(singletonRuns).toHaveLength(2);
+    expect(singletonRuns.every((run) => run.singletonKey === singletonKey)).toBe(
+      true,
+    );
+    expect(
+      singletonRuns
+        .find((run) => run.status === "queued")
+        ?.idempotencyKey.startsWith(`${singletonKey}:`),
+    ).toBe(true);
+
+    const permanentKey = `integration:event:${randomUUID()}`;
+    expect(
+      await queue.enqueue(
+        "test.permanent",
+        { safe: true },
+        { idempotencyKey: permanentKey },
+      ),
+    ).toBe("captured-pgboss-id-4");
+    expect(
+      await queue.enqueue(
+        "test.permanent",
+        { safe: true },
+        { idempotencyKey: permanentKey },
+      ),
+    ).toBeNull();
+    expect(send).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -1024,6 +1594,223 @@ describe("webhooks, opt-outs, and outreach", () => {
     expect(endpoint).toBeTruthy();
   });
 
+  it("auto-approves only safe official contacts in the effective auto-send mode", async () => {
+    const originalMode = process.env.OUTREACH_MODE;
+    try {
+      process.env.OUTREACH_MODE = "invalid";
+      expect(effectiveOutreachMode({ mode: "auto_send_approved" })).toBe(
+        "auto_send_approved",
+      );
+      process.env.OUTREACH_MODE = "auto_send_approved";
+      expect(effectiveOutreachMode({ mode: "manual_approval" })).toBe(
+        "auto_send_approved",
+      );
+      await database.insert(outreachSettings).values({
+        id: 1,
+        mode: "manual_approval",
+      });
+      const { queue, calls } = queueRecorder();
+
+      const official = await createBranch();
+      const officialInvestigation = await createInvestigation(
+        official.branch.id,
+      );
+      const [officialEndpoint] = await database
+        .insert(contactEndpoints)
+        .values({
+          branchId: official.branch.id,
+          kind: "email",
+          value: "info@cedar.example.test",
+          status: "unverified",
+          isPersonal: false,
+        })
+        .returning();
+      const officialDraft = await createOutreachDraft(
+        { type: "worker" },
+        officialInvestigation.id,
+        database,
+        queue,
+      );
+      const [autoApprovedEndpoint] = await database
+        .select()
+        .from(contactEndpoints)
+        .where(eq(contactEndpoints.id, officialEndpoint!.id));
+      const [autoApprovedMessage] = await database
+        .select()
+        .from(outreachMessages)
+        .where(eq(outreachMessages.id, officialDraft.messageId!));
+      expect(autoApprovedEndpoint!.status).toBe("approved");
+      expect(autoApprovedMessage!.status).toBe("approved");
+      expect(calls).toContainEqual({
+        name: "outreach.send",
+        payload: { messageId: officialDraft.messageId },
+      });
+      const endpointAudits = await database
+        .select()
+        .from(auditEvents)
+        .where(eq(auditEvents.entityId, officialEndpoint!.id));
+      expect(
+        endpointAudits.some(
+          (event) => event.action === "contact_endpoint_auto_approved",
+        ),
+      ).toBe(true);
+
+      const personal = await createBranch();
+      const personalInvestigation = await createInvestigation(
+        personal.branch.id,
+      );
+      const [personalEndpoint] = await database
+        .insert(contactEndpoints)
+        .values({
+          branchId: personal.branch.id,
+          kind: "email",
+          value: "someone@gmail.com",
+          status: "unverified",
+          isPersonal: true,
+        })
+        .returning();
+      const personalDraft = await createOutreachDraft(
+        { type: "worker" },
+        personalInvestigation.id,
+        database,
+        queue,
+      );
+      expect(personalDraft.messageId).toBeNull();
+      const [unchangedPersonalEndpoint] = await database
+        .select()
+        .from(contactEndpoints)
+        .where(eq(contactEndpoints.id, personalEndpoint!.id));
+      expect(unchangedPersonalEndpoint!.status).toBe("unverified");
+
+      const mismatched = await createBranch();
+      const mismatchedInvestigation = await createInvestigation(
+        mismatched.branch.id,
+      );
+      const [mismatchedEndpoint] = await database
+        .insert(contactEndpoints)
+        .values({
+          branchId: mismatched.branch.id,
+          kind: "email",
+          value: "info@other.example.test",
+          status: "unverified",
+          isPersonal: false,
+          notes: "Email domain does not match the business website.",
+        })
+        .returning();
+      const mismatchedDraft = await createOutreachDraft(
+        { type: "worker" },
+        mismatchedInvestigation.id,
+        database,
+        queue,
+      );
+      const [unchangedMismatchedEndpoint] = await database
+        .select()
+        .from(contactEndpoints)
+        .where(eq(contactEndpoints.id, mismatchedEndpoint!.id));
+      const [mismatchedMessage] = await database
+        .select()
+        .from(outreachMessages)
+        .where(eq(outreachMessages.id, mismatchedDraft.messageId!));
+      expect(unchangedMismatchedEndpoint!.status).toBe("unverified");
+      expect(mismatchedMessage!.status).toBe("draft");
+
+      const refresh = await createBranch();
+      const refreshInvestigation = await createInvestigation(refresh.branch.id);
+      await database
+        .update(investigations)
+        .set({ kind: "refresh" })
+        .where(eq(investigations.id, refreshInvestigation.id));
+      const [refreshEndpoint] = await database
+        .insert(contactEndpoints)
+        .values({
+          branchId: refresh.branch.id,
+          kind: "email",
+          value: "info@refresh.example.test",
+          status: "unverified",
+          isPersonal: false,
+        })
+        .returning();
+      const refreshDraft = await createOutreachDraft(
+        { type: "worker" },
+        refreshInvestigation.id,
+        database,
+        queue,
+      );
+      const [unchangedRefreshEndpoint] = await database
+        .select()
+        .from(contactEndpoints)
+        .where(eq(contactEndpoints.id, refreshEndpoint!.id));
+      const [refreshMessage] = await database
+        .select()
+        .from(outreachMessages)
+        .where(eq(outreachMessages.id, refreshDraft.messageId!));
+      expect(unchangedRefreshEndpoint!.status).toBe("unverified");
+      expect(refreshMessage!.status).toBe("draft");
+      expect(calls.filter((call) => call.name === "outreach.send")).toHaveLength(
+        1,
+      );
+    } finally {
+      if (originalMode === undefined) delete process.env.OUTREACH_MODE;
+      else process.env.OUTREACH_MODE = originalMode;
+    }
+  });
+
+  it("selects approved contacts before unverified contacts and uses oldest first", async () => {
+    const originalMode = process.env.OUTREACH_MODE;
+    process.env.OUTREACH_MODE = "manual_approval";
+    try {
+      const { branch } = await createBranch();
+      const investigation = await createInvestigation(branch.id);
+      const oldest = new Date("2025-01-01T00:00:00.000Z");
+      const next = new Date("2025-01-02T00:00:00.000Z");
+      await database.insert(contactEndpoints).values([
+        {
+          branchId: branch.id,
+          kind: "email",
+          value: "unverified@cedar.example.test",
+          status: "unverified",
+          createdAt: oldest,
+          updatedAt: oldest,
+        },
+        {
+          branchId: branch.id,
+          kind: "email",
+          value: "approved-oldest@cedar.example.test",
+          status: "approved",
+          createdAt: next,
+          updatedAt: next,
+        },
+        {
+          branchId: branch.id,
+          kind: "email",
+          value: "approved-newer@cedar.example.test",
+          status: "approved",
+          createdAt: new Date("2025-01-03T00:00:00.000Z"),
+          updatedAt: new Date("2025-01-03T00:00:00.000Z"),
+        },
+      ]);
+      const { queue } = queueRecorder();
+      await createOutreachDraft(
+        { type: "worker" },
+        investigation.id,
+        database,
+        queue,
+      );
+      const [thread] = await database
+        .select()
+        .from(outreachThreads)
+        .where(eq(outreachThreads.investigationId, investigation.id));
+      const [selectedEndpoint] = await database
+        .select()
+        .from(contactEndpoints)
+        .where(eq(contactEndpoints.id, thread!.contactEndpointId!));
+      expect(selectedEndpoint!.value).toBe("approved-oldest@cedar.example.test");
+    } finally {
+      if (originalMode === undefined) delete process.env.OUTREACH_MODE;
+      else process.env.OUTREACH_MODE = originalMode;
+    }
+  });
+
   it("enforces the maximum outreach count per business", async () => {
     const admin = await createUser("admin");
     const { branch } = await createBranch();
@@ -1062,6 +1849,102 @@ describe("webhooks, opt-outs, and outreach", () => {
       reason: "business-limit",
     });
     expect(await database.select().from(emailOutbox)).toHaveLength(0);
+  });
+
+  it("reschedules without sending when the rolling daily cap is reached", async () => {
+    const originalLimit = process.env.OUTREACH_DAILY_SEND_LIMIT;
+    const originalMode = process.env.OUTREACH_MODE;
+    process.env.OUTREACH_DAILY_SEND_LIMIT = "1";
+    process.env.OUTREACH_MODE = "manual_approval";
+    try {
+      const admin = await createUser("admin");
+      const { branch } = await createBranch();
+      const investigation = await createInvestigation(branch.id);
+      await database.insert(contactEndpoints).values({
+        branchId: branch.id,
+        kind: "email",
+        value: "owner@cedar.example.test",
+        status: "approved",
+      });
+      const queueCalls: Array<{
+        name: string;
+        payload: Record<string, unknown>;
+        options?: { startAfter?: Date | number | string };
+      }> = [];
+      const queue: JobQueue = {
+        async enqueue(name, payload, options) {
+          queueCalls.push({ name, payload, options });
+          return `scheduled-${queueCalls.length}`;
+        },
+      };
+      const firstDraft = await createOutreachDraft(
+        { type: "worker" },
+        investigation.id,
+        database,
+        queue,
+      );
+      await database
+        .update(outreachMessages)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(outreachMessages.id, firstDraft.messageId!));
+      const secondDraft = await createOutreachDraft(
+        { type: "worker" },
+        investigation.id,
+        database,
+        queue,
+      );
+      await approveOutreachMessage(
+        { type: "admin", userId: admin.id },
+        secondDraft.messageId!,
+        queue,
+        database,
+      );
+      const provider: EmailProvider = {
+        send: vi.fn().mockResolvedValue({
+          providerMessageId: "should-not-send",
+          captured: true,
+        }),
+      };
+      const result = await sendOutreach(
+        { type: "worker" },
+        secondDraft.messageId!,
+        database,
+        queue,
+        provider,
+      );
+      expect(result).toMatchObject({ sent: false, reason: "daily-limit" });
+      expect(provider.send).not.toHaveBeenCalled();
+      const [scheduledMessage] = await database
+        .select()
+        .from(outreachMessages)
+        .where(eq(outreachMessages.id, secondDraft.messageId!));
+      expect(scheduledMessage!.status).toBe("scheduled");
+      expect(scheduledMessage!.scheduledFor!.getTime()).toBeGreaterThan(
+        Date.now(),
+      );
+      expect(
+        queueCalls.filter(
+          (call) =>
+            call.name === "outreach.send" &&
+            call.options?.startAfter !== undefined,
+        ),
+      ).toHaveLength(1);
+      const scheduledEnqueue = queueCalls.find(
+        (call) =>
+          call.name === "outreach.send" &&
+          call.options?.startAfter !== undefined,
+      )!;
+      const startAfter = scheduledEnqueue.options!.startAfter!;
+      expect(
+        startAfter instanceof Date ? startAfter.getTime() : startAfter,
+      ).toBe(scheduledMessage!.scheduledFor!.getTime());
+    } finally {
+      if (originalLimit === undefined)
+        delete process.env.OUTREACH_DAILY_SEND_LIMIT;
+      else process.env.OUTREACH_DAILY_SEND_LIMIT = originalLimit;
+      if (originalMode === undefined) delete process.env.OUTREACH_MODE;
+      else process.env.OUTREACH_MODE = originalMode;
+    }
   });
 
   it("fails provider sends once and lets an administrator retry with a new job key", async () => {
@@ -1314,6 +2197,137 @@ describe("AI, prompt injection, and SSRF defenses", () => {
     ).toBe(true);
   });
 
+  it("drops invalid public claims while keeping grounded valid claims", async () => {
+    const pages = [
+      {
+        url: "https://business.example.test/",
+        title: "Chicken supplier",
+        text: "Chicken supplier: Green Valley Poultry.",
+      },
+    ];
+    const validClaim = {
+      product: "chicken",
+      attribute: "supplier",
+      value: "Green Valley Poultry",
+      valueEnum: null,
+      evidenceCategory: "public_website",
+      confirmedAt: null,
+      excerpt: "Chicken supplier: Green Valley Poultry.",
+    };
+    const response = {
+      claims: [
+        { ...validClaim, product: "invalid_product" },
+        validClaim,
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(response) } }],
+          }),
+        ),
+      ),
+    );
+    try {
+      const provider = new OpenAICompatibleProvider(
+        "https://ai.example.test/v1",
+        "test-key",
+        "test-model",
+      );
+      await expect(provider.extractPublicClaims(pages)).resolves.toEqual([
+        validClaim,
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("returns no public claims for an invalid response envelope", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              { message: { content: JSON.stringify({ unexpected: "value" }) } },
+            ],
+          }),
+        ),
+      ),
+    );
+    try {
+      const provider = new OpenAICompatibleProvider(
+        "https://ai.example.test/v1",
+        "test-key",
+        "test-model",
+      );
+      await expect(
+        provider.extractPublicClaims([
+          {
+            url: "https://business.example.test/",
+            title: "Page",
+            text: "Grounded page text.",
+          },
+        ]),
+      ).resolves.toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("drops invalid reply answers and defaults invalid top-level fields", async () => {
+    const text = "Our chicken supplier is Green Valley Poultry.";
+    const validAnswer = {
+      questionKey: "chicken_supplier",
+      product: "chicken",
+      attribute: "supplier",
+      value: "Green Valley Poultry",
+      valueEnum: null,
+      specificity: "specific",
+      excerpt: text,
+    };
+    const response = {
+      answers: [
+        { ...validAnswer, product: "invalid_product" },
+        validAnswer,
+      ],
+      optOut: true,
+      refusal: true,
+      staffDontKnow: "not a boolean",
+      vagueSignals: ["referral"],
+      referral: { name: "Maya", email: "maya@example.test" },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(response) } }],
+          }),
+        ),
+      ),
+    );
+    try {
+      const provider = new OpenAICompatibleProvider(
+        "https://ai.example.test/v1",
+        "test-key",
+        "test-model",
+      );
+      await expect(provider.parseReply(text, [])).resolves.toEqual({
+        answers: [validAnswer],
+        optOut: true,
+        refusal: true,
+        staffDontKnow: false,
+        vagueSignals: ["referral"],
+        referral: { name: "Maya", email: "maya@example.test" },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("scopes reply answers by product and preserves exact excerpts", async () => {
     const parser = new DemoAIProvider();
     const clarification =
@@ -1371,6 +2385,100 @@ describe("AI, prompt injection, and SSRF defenses", () => {
     ).toBe(false);
   });
 
+  it("returns only first-party details supported by page excerpts", async () => {
+    const pages = [
+      {
+        url: "https://business.example.test/",
+        title: "Paramount Fine Foods",
+        text: "Paramount Fine Foods head office at 10 Four Seasons Place, Toronto. Branch at 253 Yonge Street, Toronto.",
+      },
+    ];
+    const response = {
+      name: "Paramount Fine Foods",
+      nameExcerpt: "Paramount Fine Foods",
+      locations: [
+        {
+          address: "10 Four Seasons Place",
+          city: "Toronto",
+          phone: "416-555-0100",
+          addressExcerpt: "head office at 10 Four Seasons Place, Toronto",
+        },
+        {
+          address: "253 Yonge Street",
+          city: "Toronto",
+          phone: null,
+          addressExcerpt: "Branch at 253 Yonge Street, Toronto",
+        },
+        {
+          address: "999 Fake Street",
+          city: "Toronto",
+          addressExcerpt: "999 Fake Street, Toronto",
+        },
+        {
+          address: "555 Yonge Street",
+          city: "Toronto",
+          addressExcerpt: "Branch at 253 Yonge Street, Toronto",
+        },
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(response) } }],
+          }),
+        ),
+      ),
+    );
+    try {
+      const provider = new OpenAICompatibleProvider(
+        "https://ai.example.test/v1",
+        "test-key",
+        "test-model",
+      );
+      expect(await provider.extractBusinessDetails(pages)).toEqual({
+        name: "Paramount Fine Foods",
+        nameExcerpt: "Paramount Fine Foods",
+        locations: [
+          {
+            address: "10 Four Seasons Place",
+            city: "Toronto",
+            phone: "416-555-0100",
+            addressExcerpt: "head office at 10 Four Seasons Place, Toronto",
+          },
+          {
+            address: "253 Yonge Street",
+            city: "Toronto",
+            addressExcerpt: "Branch at 253 Yonge Street, Toronto",
+          },
+        ],
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      ...response,
+                      nameExcerpt: "An ungrounded business name",
+                    }),
+                  },
+                },
+              ],
+            }),
+          ),
+        ),
+      );
+      expect(await provider.extractBusinessDetails(pages)).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("treats AI provider failures as errors rather than fabricated findings", async () => {
     vi.stubGlobal(
       "fetch",
@@ -1425,6 +2533,92 @@ describe("AI, prompt injection, and SSRF defenses", () => {
     expect(page.text).toContain("Cedar");
   });
 
+  it("retains structured address literals without exposing unrelated scripts", () => {
+    const text = htmlToText(
+      String.raw`<script type="application/ld+json">{"@type":"PostalAddress","streetAddress":"123 Main Street","addressLocality":"Toronto","postalCode":"M5V 1Z7","address":"Unit 5 \/ 240 Queen St W \u0026 Toronto"}</script><script>self.__next_f.push([1,"{\"branchName \":\"QUEEN ST\",\"address \":\"240 Queen St W, Toronto, ON M5V 1Z7\",\"phoneNumber \":\"416 672 0358\"}"])</script><script>var x = "abc123 secret";</script><p>Visible text</p>`,
+    );
+
+    expect(text.split("\n")).toContain("Address: 123 Main Street");
+    expect(text.split("\n")).toContain("Address: Toronto");
+    expect(text.split("\n")).toContain("Address: M5V 1Z7");
+    expect(text.split("\n")).toContain("Address: Unit 5 / 240 Queen St W & Toronto");
+    expect(text.split("\n")).toContain(
+      "Address: 240 Queen St W, Toronto, ON M5V 1Z7",
+    );
+    expect(text).toContain("Visible text");
+    expect(text).not.toContain("abc123 secret");
+  });
+
+  it("deduplicates same-site links by normalized URL, including the homepage", () => {
+    const links = selectSameSiteLinks(
+      [
+        '<a href="https://www.example.test/#home">Home</a>',
+        '<a href="https://www.example.test/menu/">Menu</a>',
+        '<a href="https://example.test/menu#section">Duplicate menu</a>',
+        '<a href="https://example.test/contact/#contact">Already fetched</a>',
+        '<a href="https://EXAMPLE.test/locations/#map">Locations</a>',
+      ].join(""),
+      "https://example.test/",
+      ["https://example.test/contact"],
+    );
+
+    expect(links.map((link) => link.toString())).toEqual([
+      "https://www.example.test/menu/",
+      "https://example.test/locations/#map",
+    ]);
+  });
+
+  it("allows only www/apex-equivalent hosts while preserving allowlist boundaries", () => {
+    expect(
+      validateFetchUrl("https://paramountfinefoods.com/", [
+        "www.paramountfinefoods.com",
+      ]).hostname,
+    ).toBe("paramountfinefoods.com");
+    expect(
+      validateFetchUrl("https://www.paramountfinefoods.com/", [
+        "paramountfinefoods.com",
+      ]).hostname,
+    ).toBe("www.paramountfinefoods.com");
+    expect(
+      validateFetchUrl("https://branch.paramountfinefoods.com/", [
+        "paramountfinefoods.com",
+      ]).hostname,
+    ).toBe("branch.paramountfinefoods.com");
+    expect(() =>
+      validateFetchUrl("https://evilparamountfinefoods.com/", [
+        "www.paramountfinefoods.com",
+      ]),
+    ).toThrow("Host is not allowlisted.");
+    expect(() =>
+      validateFetchUrl("https://paramountfinefoods.com.evil.com/", [
+        "paramountfinefoods.com",
+      ]),
+    ).toThrow("Host is not allowlisted.");
+    expect(() =>
+      validateFetchUrl("https://unrelated.example/", [
+        "paramountfinefoods.com",
+      ]),
+    ).toThrow("Host is not allowlisted.");
+  });
+
+  it("pins both Node lookup callback forms to the validated IP", () => {
+    const lookup = pinnedLookup("93.184.216.34");
+    let allResult: unknown;
+    lookup("site.test", { all: true }, (error, addresses) => {
+      allResult = [error, addresses];
+    });
+    expect(allResult).toEqual([
+      null,
+      [{ address: "93.184.216.34", family: 4 }],
+    ]);
+
+    let oneResult: unknown;
+    lookup("site.test", { all: false }, (error, address, family) => {
+      oneResult = [error, address, family];
+    });
+    expect(oneResult).toEqual([null, "93.184.216.34", 4]);
+  });
+
   it("validates valid, invalid, and stale Mailgun signatures", () => {
     const key = "test-signing-key";
     const timestamp = "1738569600";
@@ -1448,6 +2642,388 @@ describe("AI, prompt injection, and SSRF defenses", () => {
         now + 16 * 60_000,
       ),
     ).toBe(false);
+  });
+
+  it("validates Resend Svix signatures, tampering, stale timestamps, and missing secrets", async () => {
+    const body = JSON.stringify({ type: "email.delivered", data: {} });
+    const request = signedResendRequest(body, "msg-valid");
+    const valid = await handleResendWebhook(request, {
+      secret: resendTestSecret,
+    });
+    expect(valid.status).toBe(200);
+    expect(await valid.json()).toMatchObject({ ok: true, ignored: true });
+
+    const tampered = new Request(request.url, {
+      method: "POST",
+      headers: request.headers,
+      body: JSON.stringify({ type: "email.received", data: {} }),
+    });
+    expect(
+      (
+        await handleResendWebhook(tampered, {
+          secret: resendTestSecret,
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await handleResendWebhook(
+          signedResendRequest(
+            body,
+            "msg-stale",
+            new Date(Date.now() - 10 * 60_000),
+          ),
+          { secret: resendTestSecret },
+        )
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await handleResendWebhook(
+          signedResendRequest(body, "msg-missing-secret"),
+          { secret: "" },
+        )
+      ).status,
+    ).toBe(401);
+  });
+
+  it("strips Gmail and Outlook quoted history while preserving unquoted replies", () => {
+    expect(
+      stripQuotedReply(
+        "We use a local supplier.\n\nOn Tue, someone wrote:\n> Original question",
+      ),
+    ).toBe("We use a local supplier.");
+    expect(
+      stripQuotedReply(
+        "We use local suppliers.\n\n-----Original Message-----\nFrom: Research\n",
+      ),
+    ).toBe("We use local suppliers.");
+    expect(
+      stripQuotedReply("First answer\n> quoted line\nSecond answer"),
+    ).toBe("First answer\nSecond answer");
+    expect(stripQuotedReply("  A plain reply.\nNo quoted history.  ")).toBe(
+      "A plain reply.\nNo quoted history.",
+    );
+    expect(
+      stripQuotedReply("Thanks for asking.\n\nFrom: HalalCheck\nSent: Today"),
+    ).toBe("Thanks for asking.");
+  });
+
+  it("retrieves and deduplicates Resend inbound replies by reply token", async () => {
+    const person = await createUser();
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id, person.id);
+    const [endpoint] = await database
+      .insert(contactEndpoints)
+      .values({
+        branchId: branch.id,
+        kind: "email",
+        value: "owner@cedar.demo.halalcheck.test",
+        status: "approved",
+      })
+      .returning();
+    const [thread] = await database
+      .insert(outreachThreads)
+      .values({
+        investigationId: investigation.id,
+        branchId: branch.id,
+        contactEndpointId: endpoint!.id,
+        threadToken: "resend-thread-token",
+      })
+      .returning();
+    const { queue } = queueRecorder();
+    const event = JSON.stringify({
+      type: "email.received",
+      created_at: new Date().toISOString(),
+      data: {
+        email_id: "resend-inbound-email-id",
+        from: endpoint!.value,
+        to: ["team@reply.example.test"],
+        received_for: ["reply+resend-thread-token@reply.example.test"],
+        message_id: "<reply@business.example.test>",
+        subject: "Re: Research question",
+        attachments: [],
+      },
+    });
+    const retrievedEmail = {
+      id: "resend-inbound-email-id",
+      to: ["reply+resend-thread-token@reply.example.test"],
+      from: endpoint!.value,
+      subject: "Re: Research question",
+      text: "Our supplier is Local Farm.\n\nOn Tue, HalalCheck wrote:\n> Original question",
+      html: null,
+      headers: {
+        "in-reply-to": "<outbound@halalcheck.test>",
+        references: "<outbound@halalcheck.test>",
+      },
+      message_id: "<reply@business.example.test>",
+    };
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
+      return new Response(JSON.stringify(retrievedEmail), { status: 200 });
+    };
+    const first = await handleResendWebhook(
+      signedResendRequest(event, "msg-received-1"),
+      {
+        apiBase: "https://resend.example.test",
+        apiKey: "test-resend-key",
+        db: database,
+        fetch: fetcher,
+        queue,
+        secret: resendTestSecret,
+      },
+    );
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ duplicate: false });
+    const duplicate = await handleResendWebhook(
+      signedResendRequest(event, "msg-received-retry"),
+      {
+        apiBase: "https://resend.example.test",
+        apiKey: "test-resend-key",
+        db: database,
+        fetch: fetcher,
+        queue,
+        secret: resendTestSecret,
+      },
+    );
+    expect(duplicate.status).toBe(200);
+    expect(await duplicate.json()).toMatchObject({ duplicate: true });
+    expect(requests).toHaveLength(2);
+    expect(requests[0]!.url).toBe(
+      "https://resend.example.test/emails/receiving/resend-inbound-email-id",
+    );
+    expect(new Headers(requests[0]!.init?.headers).get("Authorization")).toBe(
+      "Bearer test-resend-key",
+    );
+    const inbound = await database
+      .select()
+      .from(outreachMessages)
+      .where(
+        and(
+          eq(outreachMessages.threadId, thread!.id),
+          eq(outreachMessages.direction, "inbound"),
+        ),
+      );
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0]).toMatchObject({
+      providerMessageId: "resend-inbound-email-id",
+      messageIdHeader: "<reply@business.example.test>",
+      bodyText: "Our supplier is Local Farm.",
+      inReplyTo: "<outbound@halalcheck.test>",
+    });
+  });
+
+  it("returns 502 without ingesting when Resend cannot retrieve an inbound email", async () => {
+    const event = JSON.stringify({
+      type: "email.received",
+      data: {
+        email_id: "resend-fetch-failure",
+        from: "owner@example.test",
+        to: ["reply+missing-thread@reply.example.test"],
+        received_for: [],
+        subject: "Reply",
+      },
+    });
+    const response = await handleResendWebhook(
+      signedResendRequest(event, "msg-retrieve-failure"),
+      {
+        apiBase: "https://resend.example.test",
+        apiKey: "test-resend-key",
+        db: database,
+        fetch: async () => new Response("unavailable", { status: 503 }),
+        secret: resendTestSecret,
+      },
+    );
+    expect(response.status).toBe(502);
+    expect(await database.select().from(webhookEvents)).toHaveLength(0);
+    expect(await database.select().from(outreachMessages)).toHaveLength(0);
+  });
+
+  it("matches Resend bounce email_id to the outbound providerMessageId", async () => {
+    const person = await createUser();
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id, person.id);
+    const recipient = "owner@cedar.demo.halalcheck.test";
+    const [endpoint] = await database
+      .insert(contactEndpoints)
+      .values({
+        branchId: branch.id,
+        kind: "email",
+        value: recipient,
+        status: "approved",
+      })
+      .returning();
+    const [thread] = await database
+      .insert(outreachThreads)
+      .values({
+        investigationId: investigation.id,
+        branchId: branch.id,
+        contactEndpointId: endpoint!.id,
+        threadToken: "resend-bounce-token",
+      })
+      .returning();
+
+    const originalProvider = process.env.EMAIL_PROVIDER;
+    const originalSendFlag = process.env.OUTREACH_ALLOW_REAL_SEND;
+    const resendMessageId = "91f2e2b1-cc31-4a43-9a90-4892287a5a45";
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(JSON.stringify({ id: resendMessageId }), { status: 200 }),
+    );
+    let providerMessageId: string;
+    try {
+      process.env.EMAIL_PROVIDER = "resend";
+      process.env.OUTREACH_ALLOW_REAL_SEND = "true";
+      const sent = await new ResendEmailProvider(
+        "test-resend-key",
+        "https://resend.example.test",
+      ).send({
+        to: recipient,
+        from: "research@example.test",
+        subject: "Research question",
+        bodyText: "Question",
+        headers: {},
+        purpose: "outreach",
+      });
+      providerMessageId = sent.providerMessageId;
+    } finally {
+      vi.unstubAllGlobals();
+      if (originalProvider === undefined)
+        delete process.env.EMAIL_PROVIDER;
+      else process.env.EMAIL_PROVIDER = originalProvider;
+      if (originalSendFlag === undefined)
+        delete process.env.OUTREACH_ALLOW_REAL_SEND;
+      else process.env.OUTREACH_ALLOW_REAL_SEND = originalSendFlag;
+    }
+    const [outbound] = await database
+      .insert(outreachMessages)
+      .values({
+        threadId: thread!.id,
+        direction: "outbound",
+        sequence: 1,
+        kind: "initial",
+        status: "sent",
+        subject: "Research question",
+        bodyText: "Question",
+        questions: [],
+        messageIdHeader: "<resend-outbound@halalcheck.test>",
+        providerMessageId,
+        idempotencyKey: "resend-outbound",
+      })
+      .returning();
+    expect(providerMessageId!).toBe(resendMessageId);
+    const event = JSON.stringify({
+      type: "email.bounced",
+      data: {
+        email_id: providerMessageId,
+        to: [recipient],
+        bounce: {
+          type: "Permanent",
+          subType: "HardBounce",
+          message: "Mailbox does not exist.",
+        },
+      },
+    });
+    const bounce = await handleResendWebhook(
+      signedResendRequest(event, "msg-permanent-bounce"),
+      { db: database, secret: resendTestSecret },
+    );
+    expect(bounce.status).toBe(200);
+    expect(await bounce.json()).toMatchObject({ duplicate: false });
+    const [failedMessage] = await database
+      .select()
+      .from(outreachMessages)
+      .where(eq(outreachMessages.id, outbound!.id));
+    const [updatedThread] = await database
+      .select()
+      .from(outreachThreads)
+      .where(eq(outreachThreads.id, thread!.id));
+    expect(failedMessage!.status).toBe("failed");
+    expect(updatedThread!.status).toBe("bounced");
+    expect(await database.select().from(suppressions)).toMatchObject([
+      { valueNormalized: recipient },
+    ]);
+  });
+
+  it("guards Resend sends and maps reply_to, custom headers, and idempotency", async () => {
+    const originalProvider = process.env.EMAIL_PROVIDER;
+    const originalSendFlag = process.env.OUTREACH_ALLOW_REAL_SEND;
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
+      return new Response(
+        JSON.stringify({
+          id: "91f2e2b1-cc31-4a43-9a90-4892287a5a45",
+        }),
+        { status: 200 },
+      );
+    };
+    vi.stubGlobal("fetch", fetcher);
+    const provider = new ResendEmailProvider(
+      "test-resend-key",
+      "https://resend.example.test",
+    );
+    try {
+      process.env.EMAIL_PROVIDER = "resend";
+      process.env.OUTREACH_ALLOW_REAL_SEND = "false";
+      await expect(
+        provider.send({
+          to: "owner@example.test",
+          from: "research@example.test",
+          subject: "Research",
+          bodyText: "Question",
+          headers: { "Reply-To": "reply@example.test" },
+          purpose: "outreach",
+        }),
+      ).rejects.toThrow("explicit real-send flag required");
+      expect(requests).toHaveLength(0);
+
+      process.env.OUTREACH_ALLOW_REAL_SEND = "true";
+      const result = await provider.send({
+        to: "owner@example.test",
+        from: "research@example.test",
+        subject: "Research",
+        bodyText: "Question",
+        headers: {
+          "Reply-To": "reply@example.test",
+          "Message-ID": "<test@example.test>",
+          "List-Unsubscribe": "<mailto:unsubscribe@example.test>",
+        },
+        purpose: "outreach",
+        relatedMessageId: "outreach-message-id",
+      });
+      expect(result).toEqual({
+        providerMessageId: "91f2e2b1-cc31-4a43-9a90-4892287a5a45",
+        captured: false,
+      });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.url).toBe("https://resend.example.test/emails");
+      expect(requests[0]!.init?.method).toBe("POST");
+      const headers = new Headers(requests[0]!.init?.headers);
+      expect(headers.get("Authorization")).toBe("Bearer test-resend-key");
+      expect(headers.get("Idempotency-Key")).toBe("outreach-message-id");
+      expect(JSON.parse(String(requests[0]!.init?.body))).toEqual({
+        from: "research@example.test",
+        to: ["owner@example.test"],
+        subject: "Research",
+        text: "Question",
+        reply_to: "reply@example.test",
+        headers: {
+          "Message-ID": "<test@example.test>",
+          "List-Unsubscribe": "<mailto:unsubscribe@example.test>",
+        },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      if (originalProvider === undefined)
+        delete process.env.EMAIL_PROVIDER;
+      else process.env.EMAIL_PROVIDER = originalProvider;
+      if (originalSendFlag === undefined)
+        delete process.env.OUTREACH_ALLOW_REAL_SEND;
+      else process.env.OUTREACH_ALLOW_REAL_SEND = originalSendFlag;
+    }
   });
 });
 
@@ -2004,6 +3580,248 @@ describe("remaining requested regressions", () => {
 });
 
 describe("publication notifications and fixture coverage", () => {
+  async function createGoogleProviderInvestigation() {
+    const { business, branch } = await createBranch({
+      businessName: "",
+      branchName: "",
+    });
+    await database
+      .update(branches)
+      .set({
+        detailsSource: "provider",
+        name: "",
+        address: "",
+        city: "",
+        website: null,
+      })
+      .where(eq(branches.id, branch.id));
+    await database
+      .update(businesses)
+      .set({ name: "", website: null })
+      .where(eq(businesses.id, business.id));
+    await database.insert(externalPlaceIds).values({
+      branchId: branch.id,
+      provider: "google",
+      externalId: `google-test:${branch.id}`,
+    });
+    const investigation = await createInvestigation(branch.id);
+    return { branch, investigation };
+  }
+
+  async function runProviderResearch(
+    googleFormattedAddress: string,
+    extractedDetails: ExtractedBusinessDetails,
+    includeUsableEmail = true,
+  ) {
+    const { business, branch } = await createBranch({
+      businessName: "",
+      branchName: "",
+    });
+    await database
+      .update(branches)
+      .set({
+        detailsSource: "provider",
+        name: "",
+        address: "",
+        city: "",
+        website: null,
+      })
+      .where(eq(branches.id, branch.id));
+    await database
+      .update(businesses)
+      .set({ name: "", website: null })
+      .where(eq(businesses.id, business.id));
+    await database.insert(externalPlaceIds).values({
+      branchId: branch.id,
+      provider: "demo",
+      externalId: `provider-test:${branch.id}`,
+    });
+    const investigation = await createInvestigation(branch.id);
+    const homePage: FetchedPage = {
+      url: "https://paramountfinefoods.com/",
+      contentType: "text/html",
+      title: "Paramount Fine Foods",
+      text: includeUsableEmail
+        ? "Paramount Fine Foods info@paramountfinefoods.com jobs@paramountfinefoods.com someone@gmail.com"
+        : "Paramount Fine Foods",
+      bytes: Buffer.from('<html><a href="/contact">Contact</a></html>'),
+      isPdf: false,
+    };
+    const contactPage: FetchedPage = {
+      url: "https://paramountfinefoods.com/contact",
+      contentType: "text/html",
+      title: "Contact",
+      text: "Visit us at 253 Yonge Street, Toronto.",
+      bytes: Buffer.from("<html></html>"),
+      isPdf: false,
+    };
+    const aiDemo = new DemoAIProvider();
+    let businessDetailsCalls = 0;
+    const aiProvider: AIProvider = {
+      async extractPublicClaims() {
+        return [];
+      },
+      async extractBusinessDetails() {
+        businessDetailsCalls++;
+        return extractedDetails;
+      },
+      async parseReply(text, questions) {
+        return aiDemo.parseReply(text, questions);
+      },
+    };
+    const placesProvider: PlacesProvider = {
+      async searchNearby() {
+        return [];
+      },
+      async getPlace(externalId, level) {
+        expect(externalId).toBe(`provider-test:${branch.id}`);
+        expect(level).toBe("contact");
+        return {
+          id: externalId,
+          displayName: "Google Provider Name",
+          formattedAddress: googleFormattedAddress,
+          location: { latitude: 43.65, longitude: -79.38 },
+          types: ["restaurant"],
+          websiteUri: "https://www.paramountfinefoods.com/",
+          nationalPhoneNumber: "416-555-9999",
+        };
+      },
+    };
+    const fetcher = {
+      async fetch(url: string) {
+        return url.includes("/contact") ? contactPage : homePage;
+      },
+    };
+    const { queue, calls } = queueRecorder();
+    const handler = buildJobHandlers(database, queue, {
+      aiProvider,
+      placesProvider,
+      fetcher,
+    })["investigation.public_research"]!;
+    await handler(
+      { investigationId: investigation.id },
+      { jobId: "provider-research", attempt: 1 },
+    );
+    return { business, branch, investigation, calls, businessDetailsCalls };
+  }
+
+  it("waits for Google details quota before fetching or calling AI", async () => {
+    const originalLimit = process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT;
+    process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT = "1";
+    try {
+      const { investigation } = await createGoogleProviderInvestigation();
+      const now = new Date();
+      const dayWindowMs = 24 * 60 * 60 * 1000;
+      await database.insert(rateLimits).values({
+        key: `google:details:${now.toISOString().slice(0, 10)}`,
+        windowStart: new Date(
+          Math.floor(now.getTime() / dayWindowMs) * dayWindowMs,
+        ),
+        count: 1,
+      });
+      const aiProvider = new DemoAIProvider();
+      const extractPublicClaims = vi.spyOn(aiProvider, "extractPublicClaims");
+      const extractBusinessDetails = vi.spyOn(
+        aiProvider,
+        "extractBusinessDetails",
+      );
+      const getPlace = vi.fn(async () => null);
+      const placesProvider: PlacesProvider = {
+        async searchNearby() {
+          return [];
+        },
+        getPlace,
+      };
+      const fetch = vi.fn(async () => {
+        throw new Error("Unexpected website fetch.");
+      });
+      const { queue, calls } = queueRecorder();
+      const handler = buildJobHandlers(database, queue, {
+        aiProvider,
+        placesProvider,
+        fetcher: { fetch },
+      })["investigation.public_research"]!;
+
+      await handler(
+        { investigationId: investigation.id },
+        { jobId: "quota-limited-research", attempt: 1 },
+      );
+
+      const [updated] = await database
+        .select()
+        .from(investigations)
+        .where(eq(investigations.id, investigation.id));
+      expect(updated).toMatchObject({
+        paused: false,
+        stageDetail: "Waiting for Google lookup quota; will retry automatically.",
+        budgetAiCallsUsed: 0,
+      });
+      expect(getPlace).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(extractPublicClaims).not.toHaveBeenCalled();
+      expect(extractBusinessDetails).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+    } finally {
+      if (originalLimit === undefined)
+        delete process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT;
+      else process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT = originalLimit;
+    }
+  });
+
+  it("rethrows sanitized Google lookup errors for worker retries", async () => {
+    const { investigation } = await createGoogleProviderInvestigation();
+    const aiProvider = new DemoAIProvider();
+    const extractPublicClaims = vi.spyOn(aiProvider, "extractPublicClaims");
+    const extractBusinessDetails = vi.spyOn(
+      aiProvider,
+      "extractBusinessDetails",
+    );
+    const getPlace = vi.fn(async () => {
+      throw new Error(
+        "Google Places failed: api_key=private-value contact person@example.test",
+      );
+    });
+    const placesProvider: PlacesProvider = {
+      async searchNearby() {
+        return [];
+      },
+      getPlace,
+    };
+    const fetch = vi.fn(async () => {
+      throw new Error("Unexpected website fetch.");
+    });
+    const { queue, calls } = queueRecorder();
+    const handler = buildJobHandlers(database, queue, {
+      aiProvider,
+      placesProvider,
+      fetcher: { fetch },
+    })["investigation.public_research"]!;
+
+    await expect(
+      handler(
+        { investigationId: investigation.id },
+        { jobId: "provider-error-research", attempt: 1 },
+      ),
+    ).rejects.toThrow(
+      "Google Places failed: api_key=[redacted] contact [redacted email]",
+    );
+
+    expect(getPlace).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(extractPublicClaims).not.toHaveBeenCalled();
+    expect(extractBusinessDetails).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    const [unchanged] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, investigation.id));
+    expect(unchanged).toMatchObject({
+      paused: false,
+      budgetAiCallsUsed: 0,
+    });
+    expect(unchanged!.stageDetail).not.toBe("No usable business contact found.");
+  });
+
   it("deduplicates notifications for every follower", async () => {
     const follower = await createUser("user", "follower@example.test");
     const { branch } = await createBranch();
@@ -2464,6 +4282,165 @@ describe("publication notifications and fixture coverage", () => {
     expect(updated!.budgetFetchesUsed).toBeGreaterThanOrEqual(3);
   });
 
+  it("auto-confirms website details that match the transient provider address", async () => {
+    const fixture = await runProviderResearch(
+      "253 Yonge St, Toronto, ON M5B 1N8, Canada",
+      {
+        name: "Paramount Fine Foods",
+        nameExcerpt: "Paramount Fine Foods",
+        locations: [
+          {
+            address: "10 Four Seasons Place",
+            city: "Toronto",
+            phone: "416-695-8900",
+            addressExcerpt: "Head office at 10 Four Seasons Place, Toronto.",
+          },
+          {
+            address: "253 Yonge Street, Toronto",
+            city: "Toronto",
+            phone: "416-555-0100",
+            addressExcerpt: "Visit us at 253 Yonge Street, Toronto.",
+          },
+        ],
+      },
+    );
+    const [updatedBranch] = await database
+      .select()
+      .from(branches)
+      .where(eq(branches.id, fixture.branch.id));
+    const [updatedBusiness] = await database
+      .select()
+      .from(businesses)
+      .where(eq(businesses.id, fixture.business.id));
+    const endpoints = await database
+      .select()
+      .from(contactEndpoints)
+      .where(eq(contactEndpoints.branchId, fixture.branch.id));
+    const [investigation] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, fixture.investigation.id));
+    expect(updatedBranch).toMatchObject({
+      detailsSource: "first_party",
+      name: "Paramount Fine Foods",
+      address: "253 Yonge Street, Toronto",
+      city: "Toronto",
+      phone: "416-555-0100",
+      website: "https://paramountfinefoods.com/",
+    });
+    expect(updatedBusiness).toMatchObject({
+      name: "Paramount Fine Foods",
+      website: "https://paramountfinefoods.com/",
+    });
+    expect(updatedBranch!.name).not.toBe("Google Provider Name");
+    expect(updatedBranch!.address).not.toBe(
+      "253 Yonge St, Toronto, ON M5B 1N8, Canada",
+    );
+    expect(investigation!.budgetAiCallsUsed).toBe(2);
+    expect(
+      Object.fromEntries(endpoints.map((endpoint) => [endpoint.value, endpoint.status])),
+    ).toEqual({
+      "info@paramountfinefoods.com": "unverified",
+      "jobs@paramountfinefoods.com": "ambiguous",
+      "someone@gmail.com": "ambiguous",
+    });
+    expect(fixture.calls).toContainEqual({
+      name: "investigation.prepare_outreach",
+      payload: { investigationId: fixture.investigation.id },
+    });
+    const events = await database
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.entityId, fixture.branch.id));
+    expect(events.some((event) => event.action === "provider_business_details_auto_confirmed")).toBe(
+      true,
+    );
+  });
+
+  it("keeps provider identity details private when website and provider addresses differ", async () => {
+    const fixture = await runProviderResearch(
+      "255 Yonge St, Toronto, ON M5B 1N8, Canada",
+      {
+        name: "Paramount Fine Foods",
+        nameExcerpt: "Paramount Fine Foods",
+        locations: [
+          {
+            address: "253 Yonge Street",
+            city: "Toronto",
+            addressExcerpt: "Visit us at 253 Yonge Street, Toronto.",
+          },
+        ],
+      },
+    );
+    const [updatedBranch] = await database
+      .select()
+      .from(branches)
+      .where(eq(branches.id, fixture.branch.id));
+    const [updatedBusiness] = await database
+      .select()
+      .from(businesses)
+      .where(eq(businesses.id, fixture.business.id));
+    const [investigation] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, fixture.investigation.id));
+    expect(updatedBranch).toMatchObject({
+      detailsSource: "provider",
+      name: "",
+      address: "",
+      city: "",
+      website: null,
+    });
+    expect(updatedBusiness).toMatchObject({ name: "", website: null });
+    expect(investigation).toMatchObject({
+      paused: true,
+      stageDetail: waitingForAutomaticBusinessDetails,
+    });
+    expect(
+      fixture.calls.some(
+        (call) => call.name === "investigation.prepare_outreach",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not wait for business details when no usable email exists", async () => {
+    const fixture = await runProviderResearch(
+      "253 Yonge St, Toronto, ON M5B 1N8, Canada",
+      {
+        name: "Paramount Fine Foods",
+        nameExcerpt: "Paramount Fine Foods",
+        locations: [
+          {
+            address: "253 Yonge Street",
+            city: "Toronto",
+            addressExcerpt: "Visit us at 253 Yonge Street, Toronto.",
+          },
+        ],
+      },
+      false,
+    );
+    const [investigation] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, fixture.investigation.id));
+    expect(fixture.businessDetailsCalls).toBe(0);
+    expect(investigation).toMatchObject({
+      paused: false,
+      status: "reviewing_evidence",
+      stageDetail: "No usable business contact found.",
+      budgetAiCallsUsed: 1,
+    });
+    expect(fixture.calls).toContainEqual({
+      name: "investigation.evidence_review",
+      payload: { investigationId: fixture.investigation.id },
+    });
+    expect(
+      fixture.calls.some(
+        (call) => call.name === "investigation.prepare_outreach",
+      ),
+    ).toBe(false);
+  });
+
   it("uses a transient provider website and waits for business confirmation", async () => {
     const originalProvider = process.env.PLACES_PROVIDER;
     process.env.PLACES_PROVIDER = "demo";
@@ -2514,8 +4491,7 @@ describe("publication notifications and fixture coverage", () => {
         .where(eq(businesses.id, business.id));
       expect(updatedInvestigation).toMatchObject({
         paused: true,
-        stageDetail:
-          "Waiting for an administrator to confirm business details before contacting the business.",
+        stageDetail: waitingForAutomaticBusinessDetails,
       });
       expect(updatedBranch!.website).toBeNull();
       expect(updatedBusiness!.website).toBeNull();

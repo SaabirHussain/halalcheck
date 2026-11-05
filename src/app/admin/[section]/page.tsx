@@ -524,7 +524,15 @@ export default async function AdminSection({
             className="mt-3 grid gap-3 sm:grid-cols-2"
           >
             <label className="grid gap-1 text-sm">
-              Mode
+              <span>
+                Mode
+                {process.env.OUTREACH_MODE === "manual_approval" ||
+                process.env.OUTREACH_MODE === "auto_send_approved" ? (
+                  <span className="ml-1 text-xs font-normal text-muted">
+                    (set by OUTREACH_MODE)
+                  </span>
+                ) : null}
+              </span>
               <select
                 className="min-h-10 rounded-lg border border-border px-2"
                 defaultValue={settings?.mode ?? "manual_approval"}

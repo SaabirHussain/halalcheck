@@ -92,7 +92,7 @@ export async function notifyFollowers(
     await queue.enqueue(
       "notification.push",
       { notificationId: notification.id },
-      { singletonKey: `notification.push:${notification.id}` },
+      { idempotencyKey: `notification.push:${notification.id}` },
     );
     if (user.emailNotifications) {
       const [email] = await database

@@ -1,4 +1,5 @@
 import { promises as dns } from "node:dns";
+import type { LookupAddress, LookupOptions } from "node:dns";
 import { isIP } from "node:net";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -79,12 +80,18 @@ export function isPublicIp(address: string) {
 
 function domainAllowed(hostname: string, allowedDomains: string[]) {
   const normalized = hostname.toLowerCase().replace(/\.$/, "");
+  const withoutWww = (domain: string) => domain.replace(/^www\./, "");
   return allowedDomains.some((domain) => {
     const allowed = domain
       .toLowerCase()
       .replace(/^\*\./, "")
       .replace(/\.$/, "");
-    return normalized === allowed || normalized.endsWith(`.${allowed}`);
+    return (
+      normalized === allowed ||
+      normalized.endsWith(`.${allowed}`) ||
+      normalized === withoutWww(allowed) ||
+      withoutWww(normalized) === allowed
+    );
   });
 }
 
@@ -127,8 +134,9 @@ async function readCapped(response: UndiciResponse) {
   return result;
 }
 
-function htmlToText(html: string) {
-  return html
+export function htmlToText(html: string) {
+  const structuredAddresses = extractStructuredAddresses(html);
+  const text = html
     .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, " ")
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<[^>]*>/g, " ")
@@ -140,6 +148,48 @@ function htmlToText(html: string) {
     .replace(/&quot;/gi, '"')
     .replace(/\s+/g, " ")
     .trim();
+  return structuredAddresses.length
+    ? `${text}\n${structuredAddresses.map((value) => `Address: ${value}`).join("\n")}`
+    : text;
+}
+
+function extractStructuredAddresses(html: string) {
+  const addresses: string[] = [];
+  const seen = new Set<string>();
+  const fieldPattern =
+    /\\?"\s*(streetAddress|addressLocality|postalCode|address)\s*\\?"\s*:\s*\\?"((?:\\[^"]|[^"\\])*)\\?"/gi;
+  for (const scriptMatch of html.matchAll(
+    /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi,
+  )) {
+    const script = scriptMatch[1] ?? "";
+    fieldPattern.lastIndex = 0;
+    for (const fieldMatch of script.matchAll(fieldPattern)) {
+      const field = fieldMatch[1]!.trim().toLowerCase();
+      const value = fieldMatch[2]!
+        .replace(/\\u([0-9a-f]{4})/gi, (_, hex: string) =>
+          String.fromCharCode(Number.parseInt(hex, 16)),
+        )
+        .replace(/\\(["\\])/g, "$1")
+        .replace(/\\\//g, "/")
+        .replace(/\s+/g, " ")
+        .trim();
+      const validValue =
+        value.length >= 5 &&
+        value.length <= 200 &&
+        (field === "addresslocality"
+          ? /\p{L}/u.test(value) &&
+            !/\p{N}/u.test(value) &&
+            /^[\p{L}\p{M} .’'-]+$/u.test(value)
+          : /\p{L}/u.test(value) && /\p{N}/u.test(value));
+      if (!validValue) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      addresses.push(value);
+      if (addresses.length === 100) return addresses;
+    }
+  }
+  return addresses;
 }
 
 async function demoFixture(url: URL): Promise<FetchedPage> {
@@ -183,6 +233,22 @@ async function resolvePublic(hostname: string) {
   return records[0]!.address;
 }
 
+export function pinnedLookup(ip: string) {
+  const family = isIP(ip);
+  return (
+    _hostname: string,
+    options: LookupOptions,
+    callback: (
+      error: NodeJS.ErrnoException | null,
+      address: string | LookupAddress[],
+      family?: number,
+    ) => void,
+  ) => {
+    if (options.all) callback(null, [{ address: ip, family }]);
+    else callback(null, ip, family);
+  };
+}
+
 export class SSRFSafeFetcher implements SafeFetcher {
   constructor(
     private readonly fetchImpl: typeof undiciFetch = undiciFetch,
@@ -196,12 +262,9 @@ export class SSRFSafeFetcher implements SafeFetcher {
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
       const validated = validateFetchUrl(url.toString(), allowedDomains);
       const ip = await this.resolveHost(validated.hostname);
-      const family = isIP(ip);
       const dispatcher = new Agent({
         connect: {
-          lookup: (_hostname, options, callback) => {
-            callback(null, ip, family);
-          },
+          lookup: pinnedLookup(ip),
         },
       });
       try {
