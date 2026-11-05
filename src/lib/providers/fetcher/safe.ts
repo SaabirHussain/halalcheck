@@ -1,4 +1,5 @@
 import { promises as dns } from "node:dns";
+import type { LookupAddress, LookupOptions } from "node:dns";
 import { isIP } from "node:net";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -79,12 +80,18 @@ export function isPublicIp(address: string) {
 
 function domainAllowed(hostname: string, allowedDomains: string[]) {
   const normalized = hostname.toLowerCase().replace(/\.$/, "");
+  const withoutWww = (domain: string) => domain.replace(/^www\./, "");
   return allowedDomains.some((domain) => {
     const allowed = domain
       .toLowerCase()
       .replace(/^\*\./, "")
       .replace(/\.$/, "");
-    return normalized === allowed || normalized.endsWith(`.${allowed}`);
+    return (
+      normalized === allowed ||
+      normalized.endsWith(`.${allowed}`) ||
+      normalized === withoutWww(allowed) ||
+      withoutWww(normalized) === allowed
+    );
   });
 }
 
@@ -183,6 +190,22 @@ async function resolvePublic(hostname: string) {
   return records[0]!.address;
 }
 
+export function pinnedLookup(ip: string) {
+  const family = isIP(ip);
+  return (
+    _hostname: string,
+    options: LookupOptions,
+    callback: (
+      error: NodeJS.ErrnoException | null,
+      address: string | LookupAddress[],
+      family?: number,
+    ) => void,
+  ) => {
+    if (options.all) callback(null, [{ address: ip, family }]);
+    else callback(null, ip, family);
+  };
+}
+
 export class SSRFSafeFetcher implements SafeFetcher {
   constructor(
     private readonly fetchImpl: typeof undiciFetch = undiciFetch,
@@ -196,12 +219,9 @@ export class SSRFSafeFetcher implements SafeFetcher {
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
       const validated = validateFetchUrl(url.toString(), allowedDomains);
       const ip = await this.resolveHost(validated.hostname);
-      const family = isIP(ip);
       const dispatcher = new Agent({
         connect: {
-          lookup: (_hostname, options, callback) => {
-            callback(null, ip, family);
-          },
+          lookup: pinnedLookup(ip),
         },
       });
       try {

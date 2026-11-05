@@ -81,6 +81,7 @@ import {
 } from "@/lib/providers/ai/openai";
 import {
   isPublicIp,
+  pinnedLookup,
   SSRFSafeFetcher,
   validateFetchUrl,
 } from "@/lib/providers/fetcher";
@@ -1449,6 +1450,57 @@ describe("AI, prompt injection, and SSRF defenses", () => {
       ["cedar.demo.halalcheck.test"],
     );
     expect(page.text).toContain("Cedar");
+  });
+
+  it("allows only www/apex-equivalent hosts while preserving allowlist boundaries", () => {
+    expect(
+      validateFetchUrl("https://paramountfinefoods.com/", [
+        "www.paramountfinefoods.com",
+      ]).hostname,
+    ).toBe("paramountfinefoods.com");
+    expect(
+      validateFetchUrl("https://www.paramountfinefoods.com/", [
+        "paramountfinefoods.com",
+      ]).hostname,
+    ).toBe("www.paramountfinefoods.com");
+    expect(
+      validateFetchUrl("https://branch.paramountfinefoods.com/", [
+        "paramountfinefoods.com",
+      ]).hostname,
+    ).toBe("branch.paramountfinefoods.com");
+    expect(() =>
+      validateFetchUrl("https://evilparamountfinefoods.com/", [
+        "www.paramountfinefoods.com",
+      ]),
+    ).toThrow("Host is not allowlisted.");
+    expect(() =>
+      validateFetchUrl("https://paramountfinefoods.com.evil.com/", [
+        "paramountfinefoods.com",
+      ]),
+    ).toThrow("Host is not allowlisted.");
+    expect(() =>
+      validateFetchUrl("https://unrelated.example/", [
+        "paramountfinefoods.com",
+      ]),
+    ).toThrow("Host is not allowlisted.");
+  });
+
+  it("pins both Node lookup callback forms to the validated IP", () => {
+    const lookup = pinnedLookup("93.184.216.34");
+    let allResult: unknown;
+    lookup("site.test", { all: true }, (error, addresses) => {
+      allResult = [error, addresses];
+    });
+    expect(allResult).toEqual([
+      null,
+      [{ address: "93.184.216.34", family: 4 }],
+    ]);
+
+    let oneResult: unknown;
+    lookup("site.test", { all: false }, (error, address, family) => {
+      oneResult = [error, address, family];
+    });
+    expect(oneResult).toEqual([null, "93.184.216.34", 4]);
   });
 
   it("validates valid, invalid, and stale Mailgun signatures", () => {
