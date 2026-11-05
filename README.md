@@ -34,7 +34,7 @@ Set `DATABASE_URL` to the Postgres service reference (for example,
 `AI_PROVIDER`, `EMAIL_PROVIDER`, and `PUSH_PROVIDER` with the matching
 credentials when those integrations are approved; do not use the demo Places
 provider for real listings. Keep `OUTREACH_ALLOW_REAL_SEND=false` until
-Mailgun is configured and reviewed.
+Resend is configured and a test to your own address succeeds.
 
 After the first deployment has run migrations, set `ADMIN_EMAIL`,
 `ADMIN_PASSWORD` (12–128 characters), and optionally `ADMIN_NAME` in the
@@ -62,7 +62,7 @@ These credentials are local demo credentials only. Seed refuses to run unless
 - Job queue has a durable pg-boss implementation and an inline in-memory test
   implementation. A separate `tsx` worker owns queue consumers and schedules.
 - Providers use explicit adapters; absent credentials or demo settings select
-  local fixtures/outbox. Mailgun sends additionally require
+  local fixtures/outbox. Resend and Mailgun sends additionally require
   `OUTREACH_ALLOW_REAL_SEND=true`.
 - Public read models select whitelisted columns and redacted excerpts only.
 
@@ -195,31 +195,38 @@ OpenAI-compatible endpoint, set `AI_PROVIDER=openai`,
 endpoint; public web text is untrusted input and must not override system
 instructions or access private data.
 
-### Outbound and inbound Mailgun
+### Outbound and inbound email: Resend and Mailgun
 
 Email defaults to `EMAIL_PROVIDER=demo`; demo messages are captured and never
-sent. For an explicitly configured Mailgun integration, set `EMAIL_PROVIDER=mailgun`,
-`MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, and, if required by your account,
-`MAILGUN_API_BASE`. Configure `OUTREACH_FROM_ADDRESS`,
+sent. Resend is the default option for real email. Its free plan currently
+allows 3,000 emails per month and 100 per day. Set `EMAIL_PROVIDER=resend`,
+`RESEND_API_KEY`, and optionally `RESEND_API_BASE`. Verify your sending domain
+in Resend and publish its required DNS records. Enable inbound receiving on
+the reply subdomain configured in `OUTREACH_REPLY_DOMAIN` by adding Resend's
+MX record.
+
+Create a Resend webhook at `${APP_URL}/api/webhooks/resend` for
+`email.received` and `email.bounced`, then copy its signing secret to
+`RESEND_WEBHOOK_SECRET`. Configure `OUTREACH_FROM_ADDRESS`,
 `OUTREACH_REPLY_DOMAIN`, `OUTREACH_DEFAULT_TIMEZONE`,
 `OUTREACH_BUSINESS_HOURS`, and `OUTREACH_BUSINESS_DAYS` for sender identity,
-reply routing, and permitted send windows. Real sends require the separate
-opt-in `OUTREACH_ALLOW_REAL_SEND=true`; keep it false in local development and
-tests.
+reply routing, and permitted send windows. Keep
+`OUTREACH_ALLOW_REAL_SEND=false` until setup is complete; enable it only after
+testing delivery to your own address.
 
-Configure Mailgun inbound routing to the deployment's
-`/api/webhooks/mailgun/inbound` URL. Set `MAILGUN_WEBHOOK_SIGNING_KEY` to the
-signing key from Mailgun and configure delivery events to
-`/api/webhooks/mailgun/events`. The application validates signatures and
-deduplicates provider events. Do not expose webhook keys in logs or client
-bundles.
+Mailgun remains available as an alternative. Set `EMAIL_PROVIDER=mailgun`,
+`MAILGUN_API_KEY`, and `MAILGUN_DOMAIN` (plus `MAILGUN_API_BASE` if needed).
+Configure its `/api/webhooks/mailgun/inbound` and
+`/api/webhooks/mailgun/events` endpoints with `MAILGUN_WEBHOOK_SIGNING_KEY`.
+Both providers validate webhook signatures and deduplicate events. Do not
+expose API keys or webhook secrets in logs or client bundles.
 
 ### Notifications
 
 In-app notifications are stored in PostgreSQL and require no provider
 configuration. Users can control email notification preferences in account
 settings. In demo mode, email is captured in the outbox; notifications do not
-cause a real send unless the Mailgun provider and explicit send opt-in are both
+cause a real send unless a real provider and explicit send opt-in are both
 configured.
 
 ### Evidence storage
@@ -277,8 +284,8 @@ The worker registers these jobs in `src/worker/handlers.ts`:
   are HTTP-only and scoped by the application.
 - Public URL fetching validates destinations and rejects private or otherwise
   disallowed IP ranges to reduce SSRF risk. Configure only trusted providers.
-- Login and sensitive inbound operations are rate-limited; Mailgun signatures
-  are verified and webhook events are deduplicated.
+- Login and sensitive inbound operations are rate-limited; Resend Svix and
+  Mailgun signatures are verified and webhook events are deduplicated.
 - Correction uploads enforce server-side size and file-type checks; do not
   serve private storage directly from a public static directory.
 - Business email replies and raw source text are private evidence. Public pages

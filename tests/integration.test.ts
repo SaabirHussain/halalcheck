@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
+import { Webhook } from "svix";
 import { Response as UndiciResponse, fetch as undiciFetch } from "undici";
 import type PgBoss from "pg-boss";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
@@ -84,6 +85,11 @@ import {
   validateFetchUrl,
 } from "@/lib/providers/fetcher";
 import { verifyMailgunSignature } from "@/lib/providers/email/mailgun";
+import { ResendEmailProvider } from "@/lib/providers/email/resend";
+import {
+  handleResendWebhook,
+  stripQuotedReply,
+} from "@/lib/http/resend-webhook";
 import { DemoPushProvider } from "@/lib/providers/push/demo";
 import { handlePushDevicesRequest } from "@/lib/http/push-devices";
 import { InlineJobQueue } from "@/lib/jobs/memory";
@@ -195,6 +201,26 @@ async function createInvestigation(branchId: string, userId?: string) {
     .values({ branchId, createdBy: userId ?? null })
     .returning();
   return investigation!;
+}
+
+const resendTestSecret = `whsec_${Buffer.from("resend-test-signing-secret").toString("base64")}`;
+
+function signedResendRequest(
+  body: string,
+  id: string,
+  timestamp = new Date(),
+) {
+  const signature = new Webhook(resendTestSecret).sign(id, timestamp, body);
+  return new Request("http://localhost:3000/api/webhooks/resend", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "svix-id": id,
+      "svix-timestamp": String(Math.floor(timestamp.getTime() / 1000)),
+      "svix-signature": signature,
+    },
+    body,
+  });
 }
 
 beforeAll(async () => {
@@ -1448,6 +1474,388 @@ describe("AI, prompt injection, and SSRF defenses", () => {
         now + 16 * 60_000,
       ),
     ).toBe(false);
+  });
+
+  it("validates Resend Svix signatures, tampering, stale timestamps, and missing secrets", async () => {
+    const body = JSON.stringify({ type: "email.delivered", data: {} });
+    const request = signedResendRequest(body, "msg-valid");
+    const valid = await handleResendWebhook(request, {
+      secret: resendTestSecret,
+    });
+    expect(valid.status).toBe(200);
+    expect(await valid.json()).toMatchObject({ ok: true, ignored: true });
+
+    const tampered = new Request(request.url, {
+      method: "POST",
+      headers: request.headers,
+      body: JSON.stringify({ type: "email.received", data: {} }),
+    });
+    expect(
+      (
+        await handleResendWebhook(tampered, {
+          secret: resendTestSecret,
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await handleResendWebhook(
+          signedResendRequest(
+            body,
+            "msg-stale",
+            new Date(Date.now() - 10 * 60_000),
+          ),
+          { secret: resendTestSecret },
+        )
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await handleResendWebhook(
+          signedResendRequest(body, "msg-missing-secret"),
+          { secret: "" },
+        )
+      ).status,
+    ).toBe(401);
+  });
+
+  it("strips Gmail and Outlook quoted history while preserving unquoted replies", () => {
+    expect(
+      stripQuotedReply(
+        "We use a local supplier.\n\nOn Tue, someone wrote:\n> Original question",
+      ),
+    ).toBe("We use a local supplier.");
+    expect(
+      stripQuotedReply(
+        "We use local suppliers.\n\n-----Original Message-----\nFrom: Research\n",
+      ),
+    ).toBe("We use local suppliers.");
+    expect(
+      stripQuotedReply("First answer\n> quoted line\nSecond answer"),
+    ).toBe("First answer\nSecond answer");
+    expect(stripQuotedReply("  A plain reply.\nNo quoted history.  ")).toBe(
+      "A plain reply.\nNo quoted history.",
+    );
+    expect(
+      stripQuotedReply("Thanks for asking.\n\nFrom: HalalCheck\nSent: Today"),
+    ).toBe("Thanks for asking.");
+  });
+
+  it("retrieves and deduplicates Resend inbound replies by reply token", async () => {
+    const person = await createUser();
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id, person.id);
+    const [endpoint] = await database
+      .insert(contactEndpoints)
+      .values({
+        branchId: branch.id,
+        kind: "email",
+        value: "owner@cedar.demo.halalcheck.test",
+        status: "approved",
+      })
+      .returning();
+    const [thread] = await database
+      .insert(outreachThreads)
+      .values({
+        investigationId: investigation.id,
+        branchId: branch.id,
+        contactEndpointId: endpoint!.id,
+        threadToken: "resend-thread-token",
+      })
+      .returning();
+    const { queue } = queueRecorder();
+    const event = JSON.stringify({
+      type: "email.received",
+      created_at: new Date().toISOString(),
+      data: {
+        email_id: "resend-inbound-email-id",
+        from: endpoint!.value,
+        to: ["team@reply.example.test"],
+        received_for: ["reply+resend-thread-token@reply.example.test"],
+        message_id: "<reply@business.example.test>",
+        subject: "Re: Research question",
+        attachments: [],
+      },
+    });
+    const retrievedEmail = {
+      id: "resend-inbound-email-id",
+      to: ["reply+resend-thread-token@reply.example.test"],
+      from: endpoint!.value,
+      subject: "Re: Research question",
+      text: "Our supplier is Local Farm.\n\nOn Tue, HalalCheck wrote:\n> Original question",
+      html: null,
+      headers: {
+        "in-reply-to": "<outbound@halalcheck.test>",
+        references: "<outbound@halalcheck.test>",
+      },
+      message_id: "<reply@business.example.test>",
+    };
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
+      return new Response(JSON.stringify(retrievedEmail), { status: 200 });
+    };
+    const first = await handleResendWebhook(
+      signedResendRequest(event, "msg-received-1"),
+      {
+        apiBase: "https://resend.example.test",
+        apiKey: "test-resend-key",
+        db: database,
+        fetch: fetcher,
+        queue,
+        secret: resendTestSecret,
+      },
+    );
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ duplicate: false });
+    const duplicate = await handleResendWebhook(
+      signedResendRequest(event, "msg-received-retry"),
+      {
+        apiBase: "https://resend.example.test",
+        apiKey: "test-resend-key",
+        db: database,
+        fetch: fetcher,
+        queue,
+        secret: resendTestSecret,
+      },
+    );
+    expect(duplicate.status).toBe(200);
+    expect(await duplicate.json()).toMatchObject({ duplicate: true });
+    expect(requests).toHaveLength(2);
+    expect(requests[0]!.url).toBe(
+      "https://resend.example.test/emails/receiving/resend-inbound-email-id",
+    );
+    expect(new Headers(requests[0]!.init?.headers).get("Authorization")).toBe(
+      "Bearer test-resend-key",
+    );
+    const inbound = await database
+      .select()
+      .from(outreachMessages)
+      .where(
+        and(
+          eq(outreachMessages.threadId, thread!.id),
+          eq(outreachMessages.direction, "inbound"),
+        ),
+      );
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0]).toMatchObject({
+      providerMessageId: "resend-inbound-email-id",
+      messageIdHeader: "<reply@business.example.test>",
+      bodyText: "Our supplier is Local Farm.",
+      inReplyTo: "<outbound@halalcheck.test>",
+    });
+  });
+
+  it("returns 502 without ingesting when Resend cannot retrieve an inbound email", async () => {
+    const event = JSON.stringify({
+      type: "email.received",
+      data: {
+        email_id: "resend-fetch-failure",
+        from: "owner@example.test",
+        to: ["reply+missing-thread@reply.example.test"],
+        received_for: [],
+        subject: "Reply",
+      },
+    });
+    const response = await handleResendWebhook(
+      signedResendRequest(event, "msg-retrieve-failure"),
+      {
+        apiBase: "https://resend.example.test",
+        apiKey: "test-resend-key",
+        db: database,
+        fetch: async () => new Response("unavailable", { status: 503 }),
+        secret: resendTestSecret,
+      },
+    );
+    expect(response.status).toBe(502);
+    expect(await database.select().from(webhookEvents)).toHaveLength(0);
+    expect(await database.select().from(outreachMessages)).toHaveLength(0);
+  });
+
+  it("matches Resend bounce email_id to the outbound providerMessageId", async () => {
+    const person = await createUser();
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id, person.id);
+    const recipient = "owner@cedar.demo.halalcheck.test";
+    const [endpoint] = await database
+      .insert(contactEndpoints)
+      .values({
+        branchId: branch.id,
+        kind: "email",
+        value: recipient,
+        status: "approved",
+      })
+      .returning();
+    const [thread] = await database
+      .insert(outreachThreads)
+      .values({
+        investigationId: investigation.id,
+        branchId: branch.id,
+        contactEndpointId: endpoint!.id,
+        threadToken: "resend-bounce-token",
+      })
+      .returning();
+
+    const originalProvider = process.env.EMAIL_PROVIDER;
+    const originalSendFlag = process.env.OUTREACH_ALLOW_REAL_SEND;
+    const resendMessageId = "91f2e2b1-cc31-4a43-9a90-4892287a5a45";
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(JSON.stringify({ id: resendMessageId }), { status: 200 }),
+    );
+    let providerMessageId: string;
+    try {
+      process.env.EMAIL_PROVIDER = "resend";
+      process.env.OUTREACH_ALLOW_REAL_SEND = "true";
+      const sent = await new ResendEmailProvider(
+        "test-resend-key",
+        "https://resend.example.test",
+      ).send({
+        to: recipient,
+        from: "research@example.test",
+        subject: "Research question",
+        bodyText: "Question",
+        headers: {},
+        purpose: "outreach",
+      });
+      providerMessageId = sent.providerMessageId;
+    } finally {
+      vi.unstubAllGlobals();
+      if (originalProvider === undefined)
+        delete process.env.EMAIL_PROVIDER;
+      else process.env.EMAIL_PROVIDER = originalProvider;
+      if (originalSendFlag === undefined)
+        delete process.env.OUTREACH_ALLOW_REAL_SEND;
+      else process.env.OUTREACH_ALLOW_REAL_SEND = originalSendFlag;
+    }
+    const [outbound] = await database
+      .insert(outreachMessages)
+      .values({
+        threadId: thread!.id,
+        direction: "outbound",
+        sequence: 1,
+        kind: "initial",
+        status: "sent",
+        subject: "Research question",
+        bodyText: "Question",
+        questions: [],
+        messageIdHeader: "<resend-outbound@halalcheck.test>",
+        providerMessageId,
+        idempotencyKey: "resend-outbound",
+      })
+      .returning();
+    expect(providerMessageId!).toBe(resendMessageId);
+    const event = JSON.stringify({
+      type: "email.bounced",
+      data: {
+        email_id: providerMessageId,
+        to: [recipient],
+        bounce: {
+          type: "Permanent",
+          subType: "HardBounce",
+          message: "Mailbox does not exist.",
+        },
+      },
+    });
+    const bounce = await handleResendWebhook(
+      signedResendRequest(event, "msg-permanent-bounce"),
+      { db: database, secret: resendTestSecret },
+    );
+    expect(bounce.status).toBe(200);
+    expect(await bounce.json()).toMatchObject({ duplicate: false });
+    const [failedMessage] = await database
+      .select()
+      .from(outreachMessages)
+      .where(eq(outreachMessages.id, outbound!.id));
+    const [updatedThread] = await database
+      .select()
+      .from(outreachThreads)
+      .where(eq(outreachThreads.id, thread!.id));
+    expect(failedMessage!.status).toBe("failed");
+    expect(updatedThread!.status).toBe("bounced");
+    expect(await database.select().from(suppressions)).toMatchObject([
+      { valueNormalized: recipient },
+    ]);
+  });
+
+  it("guards Resend sends and maps reply_to, custom headers, and idempotency", async () => {
+    const originalProvider = process.env.EMAIL_PROVIDER;
+    const originalSendFlag = process.env.OUTREACH_ALLOW_REAL_SEND;
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
+      return new Response(
+        JSON.stringify({
+          id: "91f2e2b1-cc31-4a43-9a90-4892287a5a45",
+        }),
+        { status: 200 },
+      );
+    };
+    vi.stubGlobal("fetch", fetcher);
+    const provider = new ResendEmailProvider(
+      "test-resend-key",
+      "https://resend.example.test",
+    );
+    try {
+      process.env.EMAIL_PROVIDER = "resend";
+      process.env.OUTREACH_ALLOW_REAL_SEND = "false";
+      await expect(
+        provider.send({
+          to: "owner@example.test",
+          from: "research@example.test",
+          subject: "Research",
+          bodyText: "Question",
+          headers: { "Reply-To": "reply@example.test" },
+          purpose: "outreach",
+        }),
+      ).rejects.toThrow("explicit real-send flag required");
+      expect(requests).toHaveLength(0);
+
+      process.env.OUTREACH_ALLOW_REAL_SEND = "true";
+      const result = await provider.send({
+        to: "owner@example.test",
+        from: "research@example.test",
+        subject: "Research",
+        bodyText: "Question",
+        headers: {
+          "Reply-To": "reply@example.test",
+          "Message-ID": "<test@example.test>",
+          "List-Unsubscribe": "<mailto:unsubscribe@example.test>",
+        },
+        purpose: "outreach",
+        relatedMessageId: "outreach-message-id",
+      });
+      expect(result).toEqual({
+        providerMessageId: "91f2e2b1-cc31-4a43-9a90-4892287a5a45",
+        captured: false,
+      });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.url).toBe("https://resend.example.test/emails");
+      expect(requests[0]!.init?.method).toBe("POST");
+      const headers = new Headers(requests[0]!.init?.headers);
+      expect(headers.get("Authorization")).toBe("Bearer test-resend-key");
+      expect(headers.get("Idempotency-Key")).toBe("outreach-message-id");
+      expect(JSON.parse(String(requests[0]!.init?.body))).toEqual({
+        from: "research@example.test",
+        to: ["owner@example.test"],
+        subject: "Research",
+        text: "Question",
+        reply_to: "reply@example.test",
+        headers: {
+          "Message-ID": "<test@example.test>",
+          "List-Unsubscribe": "<mailto:unsubscribe@example.test>",
+        },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      if (originalProvider === undefined)
+        delete process.env.EMAIL_PROVIDER;
+      else process.env.EMAIL_PROVIDER = originalProvider;
+      if (originalSendFlag === undefined)
+        delete process.env.OUTREACH_ALLOW_REAL_SEND;
+      else process.env.OUTREACH_ALLOW_REAL_SEND = originalSendFlag;
+    }
   });
 });
 

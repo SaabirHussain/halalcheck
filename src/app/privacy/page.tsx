@@ -51,10 +51,10 @@ export default function PrivacyPage() {
           </p>
           <p className="mt-2">
             OpenAI may process public web pages and business responses to help
-            extract or review evidence. Mailgun may process recipient
-            addresses and message content to send or receive outreach and
-            notifications when configured. These services process information
-            to provide their respective features.
+            extract or review evidence. Our email provider (Resend) may process
+            recipient addresses and message content to send or receive outreach
+            and notifications when configured. These services process
+            information to provide their respective features.
           </p>
           <p className="mt-2">
             See Google’s{" "}

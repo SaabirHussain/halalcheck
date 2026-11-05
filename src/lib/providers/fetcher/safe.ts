@@ -127,7 +127,7 @@ async function readCapped(response: UndiciResponse) {
   return result;
 }
 
-function htmlToText(html: string) {
+export function htmlToText(html: string) {
   return html
     .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, " ")
     .replace(/<!--[\s\S]*?-->/g, " ")
