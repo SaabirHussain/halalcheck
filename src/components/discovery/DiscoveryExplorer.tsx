@@ -82,6 +82,10 @@ export function DiscoveryExplorer({
   const [manualLocation, setManualLocation] = useState("");
   const [geocoding, setGeocoding] = useState(false);
   const activeCount = activeFilterCount(filters);
+  const hasActiveFilters =
+    activeCount > 0 ||
+    filters.q.trim().length > 0 ||
+    (filters.lat !== undefined && filters.lng !== undefined);
 
   useEffect(() => {
     setFilters(initialFilters);
@@ -397,18 +401,24 @@ export function DiscoveryExplorer({
       {places.length === 0 ? (
         <div className="rounded-card border border-dashed border-border bg-surface p-8 text-center">
           <h2 className="font-display text-2xl font-semibold">
-            No places match these filters
+            {hasActiveFilters
+              ? "No places match these filters"
+              : "No places have been added yet"}
           </h2>
           <p className="mt-2 text-sm text-muted">
-            Try another category, neighbourhood, or research status.
+            {hasActiveFilters
+              ? "Try another category, neighbourhood, or research status."
+              : "The directory is ready for its first published place."}
           </p>
-          <button
-            className="mt-5 min-h-11 rounded-xl bg-accent px-5 font-semibold text-white"
-            onClick={clearFilters}
-            type="button"
-          >
-            Clear filters
-          </button>
+          {hasActiveFilters ? (
+            <button
+              className="mt-5 min-h-11 rounded-xl bg-accent px-5 font-semibold text-white"
+              onClick={clearFilters}
+              type="button"
+            >
+              Clear filters
+            </button>
+          ) : null}
         </div>
       ) : (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.06fr)_minmax(24rem,0.94fr)] lg:items-start">

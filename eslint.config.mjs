@@ -12,6 +12,7 @@ const eslintConfig = [
     ignores: [
       ".next/**",
       ".next-handoff-build/**",
+      ".next-prodcheck/**",
       "node_modules/**",
       "android/**/build/**",
       "android/.gradle/**",

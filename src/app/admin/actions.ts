@@ -165,6 +165,8 @@ export async function emergencyPauseAction(form: FormData) {
 
 export async function simulateInboundReplyAction(form: FormData) {
   const user = await requireAdmin();
+  if (process.env.DEMO_MODE !== "true")
+    throw new Error("Reply simulation is disabled.");
   const investigationId = String(form.get("investigationId") ?? "");
   const eventId = randomUUID();
   const workerRunning = await isWorkerRunning();

@@ -79,7 +79,7 @@ import {
 } from "@/lib/providers/fetcher";
 import { verifyMailgunSignature } from "@/lib/providers/email/mailgun";
 import { DemoPushProvider } from "@/lib/providers/push/demo";
-import { handlePushDevicesRequest } from "@/app/api/me/push-devices/route";
+import { handlePushDevicesRequest } from "@/lib/http/push-devices";
 import { InlineJobQueue } from "@/lib/jobs/memory";
 import type { JobQueue } from "@/lib/jobs/types";
 import {
