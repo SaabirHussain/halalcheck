@@ -77,6 +77,7 @@ import {
   refreshScan,
 } from "@/lib/domain/refresh";
 import { searchAndCacheProviderPlaces } from "@/lib/domain/provider-places";
+import { selectSameSiteLinks } from "@/lib/domain/site-links";
 import {
   confirmProviderBusinessDetails,
   waitingForAutomaticBusinessDetails,
@@ -93,6 +94,7 @@ import {
   SSRFSafeFetcher,
   validateFetchUrl,
 } from "@/lib/providers/fetcher";
+import { htmlToText } from "@/lib/providers/fetcher/safe";
 import { verifyMailgunSignature } from "@/lib/providers/email/mailgun";
 import { ResendEmailProvider } from "@/lib/providers/email/resend";
 import {
@@ -2185,6 +2187,41 @@ describe("AI, prompt injection, and SSRF defenses", () => {
       ["cedar.demo.halalcheck.test"],
     );
     expect(page.text).toContain("Cedar");
+  });
+
+  it("retains structured address literals without exposing unrelated scripts", () => {
+    const text = htmlToText(
+      String.raw`<script type="application/ld+json">{"@type":"PostalAddress","streetAddress":"123 Main Street","addressLocality":"Toronto","postalCode":"M5V 1Z7","address":"Unit 5 \/ 240 Queen St W \u0026 Toronto"}</script><script>self.__next_f.push([1,"{\"branchName \":\"QUEEN ST\",\"address \":\"240 Queen St W, Toronto, ON M5V 1Z7\",\"phoneNumber \":\"416 672 0358\"}"])</script><script>var x = "abc123 secret";</script><p>Visible text</p>`,
+    );
+
+    expect(text.split("\n")).toContain("Address: 123 Main Street");
+    expect(text.split("\n")).toContain("Address: Toronto");
+    expect(text.split("\n")).toContain("Address: M5V 1Z7");
+    expect(text.split("\n")).toContain("Address: Unit 5 / 240 Queen St W & Toronto");
+    expect(text.split("\n")).toContain(
+      "Address: 240 Queen St W, Toronto, ON M5V 1Z7",
+    );
+    expect(text).toContain("Visible text");
+    expect(text).not.toContain("abc123 secret");
+  });
+
+  it("deduplicates same-site links by normalized URL, including the homepage", () => {
+    const links = selectSameSiteLinks(
+      [
+        '<a href="https://www.example.test/#home">Home</a>',
+        '<a href="https://www.example.test/menu/">Menu</a>',
+        '<a href="https://example.test/menu#section">Duplicate menu</a>',
+        '<a href="https://example.test/contact/#contact">Already fetched</a>',
+        '<a href="https://EXAMPLE.test/locations/#map">Locations</a>',
+      ].join(""),
+      "https://example.test/",
+      ["https://example.test/contact"],
+    );
+
+    expect(links.map((link) => link.toString())).toEqual([
+      "https://www.example.test/menu/",
+      "https://example.test/locations/#map",
+    ]);
   });
 
   it("allows only www/apex-equivalent hosts while preserving allowlist boundaries", () => {

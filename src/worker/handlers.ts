@@ -27,10 +27,11 @@ import {
   waitingForAutomaticBusinessDetails,
 } from "@/lib/domain/admin";
 import { addressesMatch } from "@/lib/domain/address-match";
+import { classifyBusinessEmails } from "@/lib/domain/contact-classification";
 import {
-  classifyBusinessEmails,
-  domainsMatchWithWwwApex,
-} from "@/lib/domain/contact-classification";
+  isSiteUrlAlreadyFetched,
+  selectSameSiteLinks,
+} from "@/lib/domain/site-links";
 import { parseInboundReply, reviewEvidence } from "@/lib/domain/claims";
 import { notifyFollowers } from "@/lib/domain/notifications";
 import { getPushProvider } from "@/lib/providers/push";
@@ -185,33 +186,28 @@ export function buildJobHandlers(
         try {
           const first = await fetcher.fetch(website, allowedDomains);
           pages.push({ url: first.url, title: first.title, text: first.text });
+          const fetchedWebsiteUrls = [website, first.url];
           const html = Buffer.from(first.bytes).toString("utf8");
-          const linked = [...html.matchAll(/href=["']([^"'#]+)["']/gi)]
-            .map((match) => {
-              try {
-                return new URL(match[1]!, first.url);
-              } catch {
-                return null;
-              }
-            })
-            .filter((url): url is URL =>
-              Boolean(
-                url &&
-                domainsMatchWithWwwApex(url.hostname, domain) &&
-                /about|menu|halal|contact|location|store|branch|find/i.test(
-                  url.pathname,
-                ),
-              ),
-            );
+          const linked = selectSameSiteLinks(
+            html,
+            first.url,
+            fetchedWebsiteUrls,
+          );
           for (const linkedUrl of linked) {
             if (fetchesUsed >= 8) break;
+            if (
+              isSiteUrlAlreadyFetched(linkedUrl, fetchedWebsiteUrls)
+            )
+              continue;
             fetchesUsed++;
+            fetchedWebsiteUrls.push(linkedUrl.toString());
             try {
               const page = await fetcher.fetch(
                 linkedUrl.toString(),
                 allowedDomains,
               );
               pages.push({ url: page.url, title: page.title, text: page.text });
+              fetchedWebsiteUrls.push(page.url);
             } catch (error) {
               console.warn(
                 `Skipping linked public source: ${sanitizeMessage(error)}`,
