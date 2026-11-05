@@ -13,7 +13,7 @@ ios/DerivedData/
 .env
 .env.local
 coverage/
-storage/
+/storage/
 *.log
 tsconfig.tsbuildinfo
 test-results/
