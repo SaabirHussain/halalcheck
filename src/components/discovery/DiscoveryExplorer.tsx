@@ -4,6 +4,8 @@ import Link from "next/link";
 import { LocateFixed, MapPin, Search, SlidersHorizontal } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
+import { Geolocation } from "@capacitor/geolocation";
+import { isNativeApp } from "@/lib/native/platform";
 import { MapLoader } from "./MapLoader";
 import { FiltersPanel } from "./FiltersPanel";
 import { PlaceCard, type DiscoveryPlace } from "./PlaceCard";
@@ -28,6 +30,15 @@ function activeFilterCount(filters: DiscoveryFilterState) {
     filters.menu,
     filters.radiusKm !== defaultDiscoveryFilters.radiusKm,
   ].filter(Boolean).length;
+}
+
+function isNativeLocationTimeout(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "OS-PLUG-GLOC-0010"
+  );
 }
 
 function toSearchParams(filters: DiscoveryFilterState) {
@@ -100,8 +111,56 @@ export function DiscoveryExplorer({
     navigate(defaultDiscoveryFilters);
   }
 
-  function requestLocation() {
+  async function requestLocation() {
     setLocationMessage("");
+    const updateLocation = (latitude: number, longitude: number) => {
+      navigate({
+        ...filters,
+        lat: Number(latitude.toFixed(6)),
+        lng: Number(longitude.toFixed(6)),
+        area: "Near you",
+      });
+      setLocationMessage("");
+    };
+    if (isNativeApp()) {
+      try {
+        const permission = await Geolocation.requestPermissions();
+        if (
+          permission.location !== "granted" &&
+          permission.coarseLocation !== "granted"
+        ) {
+          setLocationMessage(
+            "Location access was denied. Enter a city or address to search nearby.",
+          );
+          return;
+        }
+        let position: Awaited<
+          ReturnType<typeof Geolocation.getCurrentPosition>
+        >;
+        try {
+          position = await Geolocation.getCurrentPosition({
+            enableHighAccuracy: true,
+            enableLocationFallback: true,
+            timeout: 15_000,
+            maximumAge: 0,
+          });
+        } catch (error) {
+          if (!isNativeLocationTimeout(error)) throw error;
+          position = await Geolocation.getCurrentPosition({
+            enableHighAccuracy: false,
+            enableLocationFallback: true,
+            timeout: 10_000,
+            maximumAge: 60_000,
+          });
+        }
+        updateLocation(position.coords.latitude, position.coords.longitude);
+      } catch {
+        setLocationMessage(
+          "We couldn’t determine your location. Enter a city or address to search nearby.",
+        );
+      }
+      return;
+    }
     if (!navigator.geolocation) {
       setLocationMessage(
         "Location is unavailable in this browser. Enter a city or address instead.",
@@ -111,14 +170,7 @@ export function DiscoveryExplorer({
 
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
-        const nextFilters = {
-          ...filters,
-          lat: Number(coords.latitude.toFixed(6)),
-          lng: Number(coords.longitude.toFixed(6)),
-          area: "Near you",
-        };
-        navigate(nextFilters);
-        setLocationMessage("");
+        updateLocation(coords.latitude, coords.longitude);
       },
       (error) => {
         const message =

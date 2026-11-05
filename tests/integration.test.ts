@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { Response as UndiciResponse, fetch as undiciFetch } from "undici";
 import type PgBoss from "pg-boss";
@@ -18,6 +18,7 @@ import {
   schema,
   auditEvents,
   users,
+  sessions,
   businesses,
   branches,
   investigations,
@@ -33,6 +34,8 @@ import {
   suppressions,
   emailOutbox,
   notifications,
+  notificationPushes,
+  pushDevices,
   outreachSettings,
   corrections,
   jobRuns,
@@ -62,7 +65,7 @@ import {
 } from "@/lib/domain/outreach";
 import { publishProposedUpdate } from "@/lib/domain/publishing";
 import { notifyFollowers } from "@/lib/domain/notifications";
-import { getPublicBranch } from "@/lib/domain/public";
+import { getPublicBranch, listPublicBranches } from "@/lib/domain/public";
 import { refreshScan } from "@/lib/domain/refresh";
 import { DemoAIProvider } from "@/lib/providers/ai/demo";
 import {
@@ -75,6 +78,8 @@ import {
   validateFetchUrl,
 } from "@/lib/providers/fetcher";
 import { verifyMailgunSignature } from "@/lib/providers/email/mailgun";
+import { DemoPushProvider } from "@/lib/providers/push/demo";
+import { handlePushDevicesRequest } from "@/app/api/me/push-devices/route";
 import { InlineJobQueue } from "@/lib/jobs/memory";
 import type { JobQueue } from "@/lib/jobs/types";
 import {
@@ -87,6 +92,7 @@ import {
   type PgBossQueue,
 } from "@/lib/jobs/pg-boss";
 import { authenticateUser } from "@/lib/auth/service";
+import { hashSessionToken, revokeSessionByToken } from "@/lib/auth/sessions";
 import type { EmailProvider } from "@/lib/providers/email/types";
 
 process.env.EMAIL_PROVIDER = "demo";
@@ -127,12 +133,27 @@ async function createUser(
   return user!;
 }
 
+async function createPushSession(userId: string) {
+  const token = randomBytes(32).toString("hex");
+  const [session] = await database
+    .insert(sessions)
+    .values({
+      tokenHash: hashSessionToken(token),
+      userId,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    })
+    .returning({ id: sessions.id });
+  return { id: session!.id, token };
+}
+
 async function createBranch(
   input: {
     website?: string;
     city?: string;
     businessName?: string;
     branchName?: string;
+    lat?: number;
+    lng?: number;
   } = {},
 ) {
   const [business] = await database
@@ -152,8 +173,8 @@ async function createBranch(
       name: input.branchName ?? "Eastside",
       address: "10 Demo Street",
       city: input.city ?? "Demo City",
-      lat: 43.65,
-      lng: -79.38,
+      lat: input.lat ?? 43.65,
+      lng: input.lng ?? -79.38,
       website: input.website ?? null,
       timezone: "America/Toronto",
       isDemo: true,
@@ -188,6 +209,42 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await client.end();
+});
+
+describe("public discovery", () => {
+  it("sorts nearby branches by distance and preserves query order without a location", async () => {
+    const [farthest, middle, nearest, origin] = await Promise.all([
+      createBranch({ branchName: "Farthest", lat: 43.7, lng: -79.38 }),
+      createBranch({ branchName: "Middle", lat: 43.65, lng: -79.32 }),
+      createBranch({ branchName: "Nearest", lat: 43.655, lng: -79.38 }),
+      createBranch({ branchName: "Origin", lat: 43.65, lng: -79.38 }),
+    ]);
+    const queryOrder = await database
+      .select({ id: branches.id })
+      .from(branches)
+      .innerJoin(businesses, eq(branches.businessId, businesses.id))
+      .limit(200);
+    const withoutLocation = await listPublicBranches({ limit: 200 }, database);
+    expect(withoutLocation.map((place) => place.id)).toEqual(
+      queryOrder.map((row) => row.id),
+    );
+
+    const nearby = await listPublicBranches(
+      { lat: 43.65, lng: -79.38, radiusKm: 25 },
+      database,
+    );
+    expect(nearby.map((place) => place.id)).toEqual([
+      origin!.branch.id,
+      nearest!.branch.id,
+      middle!.branch.id,
+      farthest!.branch.id,
+    ]);
+    const distances = nearby.map((place) => place.distanceKm);
+    expect(distances.every((distance) => distance !== null)).toBe(true);
+    expect(distances).toEqual(
+      [...distances].sort((a, b) => (a ?? 0) - (b ?? 0)),
+    );
+  });
 });
 
 describe("research requests and authorization", () => {
@@ -1670,13 +1727,17 @@ describe("publication notifications and fixture coverage", () => {
     await database
       .insert(branchFollows)
       .values({ userId: follower.id, branchId: branch.id });
+    const { queue, calls } = queueRecorder();
     expect(
-      await notifyFollowers({ type: "worker" }, revision!.id, database),
+      await notifyFollowers({ type: "worker" }, revision!.id, queue, database),
     ).toBe(1);
     expect(
-      await notifyFollowers({ type: "worker" }, revision!.id, database),
+      await notifyFollowers({ type: "worker" }, revision!.id, queue, database),
     ).toBe(0);
     expect(await database.select().from(notifications)).toHaveLength(1);
+    expect(
+      calls.filter((call) => call.name === "notification.push"),
+    ).toHaveLength(1);
   });
 
   it("records off-question clarification claims and flags conflicting website evidence", async () => {
@@ -2108,5 +2169,146 @@ describe("publication notifications and fixture coverage", () => {
       .where(eq(investigations.id, investigation.id));
     expect(updated!.budgetFetchesUsed).toBeLessThanOrEqual(8);
     expect(updated!.budgetFetchesUsed).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("native push registration and delivery", () => {
+  it("rejects anonymous device registration", async () => {
+    const response = await handlePushDevicesRequest(
+      new Request("http://localhost/api/me/push-devices", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ platform: "android", token: "demo-token" }),
+      }),
+      null,
+      database,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("upserts tokens idempotently and transfers them to the current user", async () => {
+    const firstUser = await createUser("user", "push-first@example.test");
+    const secondUser = await createUser("user", "push-second@example.test");
+    const firstSession = await createPushSession(firstUser.id);
+    const secondSession = await createPushSession(secondUser.id);
+    const register = (
+      userId: string,
+      sessionId: string,
+      platform: "ios" | "android",
+    ) =>
+      handlePushDevicesRequest(
+        new Request("http://localhost/api/me/push-devices", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ platform, token: "shared-demo-token" }),
+        }),
+        { id: userId, sessionId },
+        database,
+      );
+
+    const first = await register(firstUser.id, firstSession.id, "android");
+    const repeated = await register(firstUser.id, firstSession.id, "android");
+    expect(first.status).toBe(200);
+    expect(repeated.status).toBe(200);
+    const [firstDevice] = await database.select().from(pushDevices);
+    expect(firstDevice!.sessionId).toBe(firstSession.id);
+    expect(await database.select().from(pushDevices)).toHaveLength(1);
+
+    const transferred = await register(secondUser.id, secondSession.id, "ios");
+    expect(transferred.status).toBe(200);
+    const [device] = await database.select().from(pushDevices);
+    expect(device!.userId).toBe(secondUser.id);
+    expect(device!.sessionId).toBe(secondSession.id);
+    expect(device!.platform).toBe("ios");
+    expect(await database.select().from(pushDevices)).toHaveLength(1);
+  });
+
+  it("deletes a registered device when its session is revoked", async () => {
+    const user = await createUser();
+    const session = await createPushSession(user.id);
+    const response = await handlePushDevicesRequest(
+      new Request("http://localhost/api/me/push-devices", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          platform: "android",
+          token: "session-device-token",
+        }),
+      }),
+      { id: user.id, sessionId: session.id },
+      database,
+    );
+    expect(response.status).toBe(200);
+    expect(
+      await database
+        .select()
+        .from(pushDevices)
+        .where(eq(pushDevices.sessionId, session.id)),
+    ).toHaveLength(1);
+
+    await revokeSessionByToken(session.token, database);
+
+    expect(
+      await database.select().from(sessions).where(eq(sessions.id, session.id)),
+    ).toHaveLength(0);
+    expect(
+      await database
+        .select()
+        .from(pushDevices)
+        .where(eq(pushDevices.sessionId, session.id)),
+    ).toHaveLength(0);
+  });
+
+  it("records one demo delivery per device when a push job is retried", async () => {
+    process.env.PUSH_PROVIDER = "demo";
+    const user = await createUser();
+    const { branch } = await createBranch();
+    const [notification] = await database
+      .insert(notifications)
+      .values({
+        userId: user.id,
+        type: "findings_published",
+        branchId: branch.id,
+        title: "Research findings published",
+        body: "New reviewed findings.",
+        link: `/places/${branch.id}`,
+        dedupeKey: "push-retry-test",
+      })
+      .returning();
+    const devices = await database
+      .insert(pushDevices)
+      .values([
+        { userId: user.id, platform: "android", token: "demo-device-one" },
+        { userId: user.id, platform: "ios", token: "demo-device-two" },
+      ])
+      .returning();
+    const handlers = buildJobHandlers(database, queueRecorder().queue);
+    const pushJob = handlers["notification.push"]!;
+    const payload = { notificationId: notification!.id };
+    const context = { jobId: "push-test", attempt: 1 };
+    await pushJob(payload, context);
+    await pushJob(payload, context);
+    expect(await database.select().from(notificationPushes)).toHaveLength(2);
+    expect(
+      (await database.select().from(notificationPushes)).map(
+        (delivery) => delivery.status,
+      ),
+    ).toEqual(["captured", "captured"]);
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      await new DemoPushProvider(database).send({
+        notificationId: notification!.id,
+        deviceId: devices[0]!.id,
+        platform: "android",
+        token: "demo-device-one",
+        title: "Research findings published",
+        body: "New reviewed findings.",
+        data: { link: `/places/${branch.id}` },
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });

@@ -74,7 +74,16 @@ export async function getCurrentUser(database: typeof defaultDb = defaultDb) {
       // Server Component renders cannot mutate cookies; DB expiry still rolls forward.
     }
   }
-  return session.user;
+  return { ...session.user, sessionId: session.id };
+}
+
+export async function revokeSessionByToken(
+  token: string,
+  database: typeof defaultDb = defaultDb,
+) {
+  await database
+    .delete(sessions)
+    .where(eq(sessions.tokenHash, hashSessionToken(token)));
 }
 
 export async function revokeCurrentSession(
@@ -82,11 +91,7 @@ export async function revokeCurrentSession(
 ) {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE)?.value;
-  if (token) {
-    await database
-      .delete(sessions)
-      .where(eq(sessions.tokenHash, hashSessionToken(token)));
-  }
+  if (token) await revokeSessionByToken(token, database);
   cookieStore.delete(SESSION_COOKIE);
 }
 

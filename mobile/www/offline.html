@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#faf6ef" />
+    <title>HalalCheck — Offline</title>
+    <style>
+      :root { color-scheme: light; font-family: system-ui, sans-serif; color: #1e2420; background: #faf6ef; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
+      main { max-width: 28rem; text-align: center; }
+      h1 { color: #163f2c; }
+      button { border: 0; border-radius: 999px; background: #1f5c3f; color: white; padding: 12px 20px; font: inherit; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>HalalCheck</h1>
+      <p>You're offline — HalalCheck needs a connection to load research</p>
+      <button id="retry" type="button">Retry</button>
+    </main>
+    <script>
+      document.getElementById("retry").addEventListener("click", () => {
+        window.location.href = "http://10.0.2.2:3000";
+      });
+    </script>
+  </body>
+</html>

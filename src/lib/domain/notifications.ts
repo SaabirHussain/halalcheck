@@ -1,5 +1,6 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
+import type { JobQueue } from "@/lib/jobs/types";
 import {
   branchFollows,
   emailOutbox,
@@ -17,6 +18,7 @@ type Database = typeof defaultDb;
 export async function notifyFollowers(
   actor: Actor,
   revisionId: string,
+  queue: JobQueue,
   database: Database = defaultDb,
 ) {
   if (actor.type !== "worker" && actor.type !== "system")
@@ -87,6 +89,11 @@ export async function notifyFollowers(
       .returning({ id: notifications.id });
     if (!notification) continue;
     createdCount += 1;
+    await queue.enqueue(
+      "notification.push",
+      { notificationId: notification.id },
+      { singletonKey: `notification.push:${notification.id}` },
+    );
     if (user.emailNotifications) {
       const [email] = await database
         .insert(emailOutbox)

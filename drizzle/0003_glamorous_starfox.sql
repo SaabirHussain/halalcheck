@@ -1,0 +1,2 @@
+ALTER TABLE "push_devices" ADD COLUMN "session_id" uuid;--> statement-breakpoint
+ALTER TABLE "push_devices" ADD CONSTRAINT "push_devices_session_id_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE cascade ON UPDATE no action;

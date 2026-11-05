@@ -22,7 +22,7 @@ export function SiteHeader({
   unreadCount: number;
 }) {
   return (
-    <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur">
+    <header className="sticky top-0 z-40 border-b border-border bg-background/95 pt-[env(safe-area-inset-top)] backdrop-blur">
       <div className="mx-auto flex min-h-16 max-w-7xl items-center gap-5 px-4 sm:px-6 lg:min-h-[4.5rem]">
         <Link
           className="shrink-0 text-xl font-extrabold tracking-tight text-accent-strong sm:text-2xl"

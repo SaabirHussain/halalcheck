@@ -342,49 +342,60 @@ export async function listPublicBranches(
           ),
         )
     : [];
-  const matched = rows.filter((row) => {
-    const branchClaims = claimsForBranches.filter(
-      (claim) => claim.branchId === row.id,
-    );
-    if (
-      filters.slaughter &&
-      !branchClaims.some(
-        (claim) =>
-          claim.attribute === "slaughter_method" &&
-          claim.valueEnum === filters.slaughter,
-      )
-    )
-      return false;
-    if (filters.certified != null) {
-      const hasCertificate = certsForBranches.some(
-        (certificate) =>
-          certificate.branchId === row.id ||
-          certificate.businessId === row.businessId,
+  const location =
+    filters.lat == null || filters.lng == null
+      ? null
+      : { lat: filters.lat, lng: filters.lng };
+  const matched = rows
+    .map((row, index) => ({
+      row,
+      index,
+      distanceKm: location
+        ? haversineKm(location.lat, location.lng, row.lat, row.lng)
+        : null,
+    }))
+    .filter(({ row, distanceKm }) => {
+      const branchClaims = claimsForBranches.filter(
+        (claim) => claim.branchId === row.id,
       );
-      if (filters.certified !== hasCertificate) return false;
-    }
-    if (
-      filters.menu &&
-      !branchClaims.some(
-        (claim) =>
-          claim.attribute === "menu_coverage" &&
-          claim.valueEnum === filters.menu,
+      if (
+        filters.slaughter &&
+        !branchClaims.some(
+          (claim) =>
+            claim.attribute === "slaughter_method" &&
+            claim.valueEnum === filters.slaughter,
+        )
       )
-    )
-      return false;
-    const distanceKm =
-      filters.lat == null || filters.lng == null
-        ? null
-        : haversineKm(filters.lat, filters.lng, row.lat, row.lng);
-    if (
-      distanceKm != null &&
-      filters.radiusKm != null &&
-      distanceKm > filters.radiusKm
-    )
-      return false;
-    return true;
-  });
-  return matched.map((row) => {
+        return false;
+      if (filters.certified != null) {
+        const hasCertificate = certsForBranches.some(
+          (certificate) =>
+            certificate.branchId === row.id ||
+            certificate.businessId === row.businessId,
+        );
+        if (filters.certified !== hasCertificate) return false;
+      }
+      if (
+        filters.menu &&
+        !branchClaims.some(
+          (claim) =>
+            claim.attribute === "menu_coverage" &&
+            claim.valueEnum === filters.menu,
+        )
+      )
+        return false;
+      if (
+        distanceKm != null &&
+        filters.radiusKm != null &&
+        distanceKm > filters.radiusKm
+      )
+        return false;
+      return true;
+    });
+  if (location) {
+    matched.sort((a, b) => a.distanceKm! - b.distanceKm! || a.index - b.index);
+  }
+  return matched.map(({ row, distanceKm }) => {
     const branchClaims = claimsForBranches.filter(
       (claim) => claim.branchId === row.id,
     );
@@ -424,14 +435,7 @@ export async function listPublicBranches(
     return {
       ...row,
       evidenceChips: [...new Set(evidenceChips)].slice(0, 2),
-      distanceKm:
-        filters.lat == null || filters.lng == null
-          ? null
-          : Number(
-              haversineKm(filters.lat, filters.lng, row.lat, row.lng).toFixed(
-                1,
-              ),
-            ),
+      distanceKm: distanceKm == null ? null : Number(distanceKm.toFixed(1)),
     };
   });
 }

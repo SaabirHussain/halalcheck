@@ -28,7 +28,7 @@ export function NotificationCard({
           : "border-accent/30 bg-accent-soft"
       }`}
     >
-      <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+      <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1 break-words">
           <p className="text-xs text-muted">
             {new Intl.DateTimeFormat("en", {
@@ -50,7 +50,7 @@ export function NotificationCard({
             {notification.body}
           </p>
         </div>
-        <div className="flex min-w-0 flex-wrap gap-2">
+        <div className="flex min-w-0 flex-wrap gap-2 sm:shrink-0">
           <Link
             className="inline-flex min-h-10 items-center rounded-lg border border-border bg-surface px-3 text-sm font-semibold"
             href={notification.link}

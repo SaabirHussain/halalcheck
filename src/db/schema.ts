@@ -182,6 +182,12 @@ export const notificationTypeEnum = pgEnum("notification_type", [
   "investigation_unsuccessful",
   "correction_reviewed",
 ]);
+export const pushPlatformEnum = pgEnum("push_platform", ["ios", "android"]);
+export const notificationPushStatusEnum = pgEnum("notification_push_status", [
+  "captured",
+  "sent",
+  "failed",
+]);
 export const auditActorEnum = pgEnum("audit_actor_type", [
   "user",
   "admin",
@@ -962,6 +968,50 @@ export const notificationEmails = pgTable(
   ],
 );
 
+export const pushDevices = pgTable(
+  "push_devices",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id").references(() => sessions.id, {
+      onDelete: "cascade",
+    }),
+    platform: pushPlatformEnum("platform").notNull(),
+    token: text("token").notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("push_devices_user_idx").on(table.userId)],
+);
+
+export const notificationPushes = pgTable(
+  "notification_pushes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    notificationId: uuid("notification_id")
+      .notNull()
+      .references(() => notifications.id, { onDelete: "cascade" }),
+    deviceId: uuid("device_id")
+      .notNull()
+      .references(() => pushDevices.id, { onDelete: "cascade" }),
+    status: notificationPushStatusEnum("status").notNull().default("captured"),
+    providerMessageId: text("provider_message_id"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("notification_pushes_notification_device_unique").on(
+      table.notificationId,
+      table.deviceId,
+    ),
+  ],
+);
+
 export const schema = {
   users,
   sessions,
@@ -990,6 +1040,8 @@ export const schema = {
   corrections,
   notifications,
   notificationEmails,
+  pushDevices,
+  notificationPushes,
   auditEvents,
   rateLimits,
   emailOutbox,
