@@ -2,7 +2,8 @@ import type { EnqueueOptions, JobHandler, JobQueue } from "./types";
 
 export class InlineJobQueue implements JobQueue {
   private readonly handlers = new Map<string, JobHandler>();
-  private readonly seenSingletonKeys = new Set<string>();
+  private readonly activeSingletonKeys = new Set<string>();
+  private readonly idempotencyKeys = new Set<string>();
   private sequence = 0;
 
   register<T extends Record<string, unknown>>(
@@ -17,12 +18,23 @@ export class InlineJobQueue implements JobQueue {
     payload: T,
     options: EnqueueOptions = {},
   ) {
+    const activeSingletonKey = options.singletonKey
+      ? `${name}:${options.singletonKey}`
+      : null;
     if (
-      options.singletonKey &&
-      this.seenSingletonKeys.has(options.singletonKey)
+      activeSingletonKey &&
+      this.activeSingletonKeys.has(activeSingletonKey)
     )
       return null;
-    if (options.singletonKey) this.seenSingletonKeys.add(options.singletonKey);
+    if (
+      options.idempotencyKey &&
+      this.idempotencyKeys.has(options.idempotencyKey)
+    )
+      return null;
+    if (activeSingletonKey)
+      this.activeSingletonKeys.add(activeSingletonKey);
+    if (options.idempotencyKey)
+      this.idempotencyKeys.add(options.idempotencyKey);
     const id = `inline-${++this.sequence}`;
     const startAfter =
       options.startAfter instanceof Date
@@ -32,12 +44,20 @@ export class InlineJobQueue implements JobQueue {
           : 0;
     if (startAfter > Date.now()) return id;
     const handler = this.handlers.get(name);
-    if (handler) await handler(payload, { jobId: id, attempt: 1 });
+    if (handler) {
+      try {
+        await handler(payload, { jobId: id, attempt: 1 });
+      } finally {
+        if (activeSingletonKey)
+          this.activeSingletonKeys.delete(activeSingletonKey);
+      }
+    }
     return id;
   }
 
   clear() {
-    this.seenSingletonKeys.clear();
+    this.activeSingletonKeys.clear();
+    this.idempotencyKeys.clear();
     this.sequence = 0;
   }
 }

@@ -503,7 +503,7 @@ export async function createOutreachDraft(
       await queue.enqueue(
         "outreach.send",
         { messageId: message.id },
-        { singletonKey: `outreach:${message.id}` },
+        { idempotencyKey: `outreach:${message.id}` },
       );
   }
   return {
@@ -593,7 +593,7 @@ export async function approveOutreachMessage(
   await queue.enqueue(
     "outreach.send",
     { messageId },
-    { singletonKey: `outreach:${messageId}` },
+    { idempotencyKey: `outreach:${messageId}` },
   );
 }
 
@@ -1102,7 +1102,7 @@ export async function sendOutreach(
       "outreach.no_response_check",
       { investigationId: thread.investigationId },
       {
-        singletonKey: `no_response:${message.id}`,
+        idempotencyKey: `no_response:${message.id}`,
         startAfter: (settings?.noResponseDays ?? 7) * 86400_000,
       },
     );
@@ -1138,7 +1138,7 @@ async function reschedule(
       "outreach.send",
       { messageId },
       {
-        singletonKey: `reschedule:${messageId}:${scheduledFor.getTime()}`,
+        idempotencyKey: `reschedule:${messageId}:${scheduledFor.getTime()}`,
         startAfter: scheduledFor,
       },
     );

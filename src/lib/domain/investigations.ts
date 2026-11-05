@@ -91,7 +91,6 @@ export async function resumeInvestigation(
       { messageId: message.id },
       {
         idempotencyKey: retryKey,
-        singletonKey: retryKey,
         ...(message.scheduledFor ? { startAfter: message.scheduledFor } : {}),
       },
     );
@@ -101,7 +100,7 @@ export async function resumeInvestigation(
     await queue.enqueue(
       queueName,
       { investigationId },
-      { singletonKey: `${queueName}:${investigationId}` },
+      { singletonKey: stageSingletonKey(queueName, investigationId) },
     );
   }
 }
@@ -234,4 +233,11 @@ export function stageQueue(status: string) {
     reviewing_evidence: "investigation.evidence_review",
   };
   return names[status];
+}
+
+export function stageSingletonKey(queueName: string, investigationId: string) {
+  const stageName = queueName.startsWith("investigation.")
+    ? queueName.slice("investigation.".length)
+    : queueName;
+  return `${stageName}:${investigationId}`;
 }

@@ -262,7 +262,7 @@ export async function publishProposedUpdate(
   await queue.enqueue(
     "notify.followers",
     { revisionId: revision!.id },
-    { singletonKey: `revision:${revision!.id}` },
+    { idempotencyKey: `revision:${revision!.id}` },
   );
   return revision!;
 }

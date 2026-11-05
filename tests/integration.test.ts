@@ -764,6 +764,293 @@ describe("investigation reconciliation", () => {
     expect(events).toHaveLength(1);
     expect(events[0]!.actorType).toBe("worker");
   });
+
+  it("re-enqueues a succeeded stage while its investigation remains active", async () => {
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id);
+    await database
+      .update(investigations)
+      .set({ status: "checking_public_sources", paused: false })
+      .where(eq(investigations.id, investigation.id));
+    const jobName = "investigation.public_research";
+    const singletonKey = `public_research:${investigation.id}`;
+    await database.insert(jobRuns).values({
+      investigationId: investigation.id,
+      jobName,
+      idempotencyKey: `${singletonKey}:previous`,
+      singletonKey,
+      status: "succeeded",
+    });
+
+    let sent = 0;
+    const send = vi.fn(async () => `reconcile-job-${++sent}`);
+    const queue = new DurableQueue({ send } as unknown as PgBoss, database);
+    expect(
+      await reconcileInvestigations(
+        { type: "worker" },
+        queue,
+        database,
+        new Date(),
+      ),
+    ).toBe(1);
+    const runs = await database
+      .select()
+      .from(jobRuns)
+      .where(
+        and(
+          eq(jobRuns.investigationId, investigation.id),
+          eq(jobRuns.jobName, jobName),
+        ),
+      );
+    expect(runs).toHaveLength(2);
+    expect(runs.map((run) => run.status).sort()).toEqual([
+      "queued",
+      "succeeded",
+    ]);
+    expect(
+      runs
+        .find((run) => run.status === "queued")
+        ?.idempotencyKey.startsWith(`${singletonKey}:`),
+    ).toBe(true);
+    expect(
+      runs.find((run) => run.status === "queued")?.singletonKey,
+    ).toBe(singletonKey);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares public-research singleton keys between reconcile and other callers", async () => {
+    const { branch: existingBranch } = await createBranch();
+    const existing = await createInvestigation(existingBranch.id);
+    const { branch: reconciledBranch } = await createBranch();
+    const reconciled = await createInvestigation(reconciledBranch.id);
+    for (const investigation of [existing, reconciled]) {
+      await database
+        .update(investigations)
+        .set({ status: "checking_public_sources", paused: false })
+        .where(eq(investigations.id, investigation.id));
+    }
+
+    let sent = 0;
+    const send = vi.fn(async () => `public-research-${++sent}`);
+    const queue = new DurableQueue({ send } as unknown as PgBoss, database);
+    const existingKey = `public_research:${existing.id}`;
+    expect(
+      await queue.enqueue(
+        "investigation.public_research",
+        { investigationId: existing.id },
+        { singletonKey: existingKey },
+      ),
+    ).toBe("public-research-1");
+
+    const [existingRun] = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.investigationId, existing.id));
+    expect(existingRun!.singletonKey).toBe(existingKey);
+    expect(
+      await reconcileInvestigations(
+        { type: "worker" },
+        queue,
+        database,
+        new Date(),
+      ),
+    ).toBe(1);
+
+    const reconciledKey = `public_research:${reconciled.id}`;
+    const reconciledRuns = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.investigationId, reconciled.id));
+    expect(reconciledRuns).toHaveLength(1);
+    expect(reconciledRuns[0]!.singletonKey).toBe(reconciledKey);
+    expect(
+      await queue.enqueue(
+        "investigation.public_research",
+        { investigationId: reconciled.id },
+        { singletonKey: reconciledKey },
+      ),
+    ).toBeNull();
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails stale singleton runs and re-enqueues the stage in one pass", async () => {
+    const now = new Date("2026-05-02T12:00:00.000Z");
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id);
+    await database
+      .update(investigations)
+      .set({ status: "checking_public_sources", paused: false })
+      .where(eq(investigations.id, investigation.id));
+    const staleAt = new Date(now.getTime() - 31 * 60_000);
+    const singletonKey = `public_research:${investigation.id}`;
+    const [staleRun] = await database
+      .insert(jobRuns)
+      .values({
+        investigationId: investigation.id,
+        jobName: "investigation.public_research",
+        idempotencyKey: `stale-public-research:${investigation.id}`,
+        singletonKey,
+        status: "running",
+        updatedAt: staleAt,
+      })
+      .returning();
+    let sent = 0;
+    const send = vi.fn(async () => `reconciled-job-${++sent}`);
+    const queue = new DurableQueue({ send } as unknown as PgBoss, database);
+
+    expect(
+      await reconcileInvestigations({ type: "worker" }, queue, database, now),
+    ).toBe(1);
+
+    const runs = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.investigationId, investigation.id));
+    const failedRun = runs.find((run) => run.id === staleRun!.id);
+    const queuedRun = runs.find((run) => run.status === "queued");
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      lastError: "Stale run: worker did not finish.",
+      finishedAt: now,
+      updatedAt: now,
+    });
+    expect(queuedRun!.singletonKey).toBe(singletonKey);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves fresh running singleton runs untouched", async () => {
+    const now = new Date("2026-05-02T12:00:00.000Z");
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id);
+    await database
+      .update(investigations)
+      .set({ status: "checking_public_sources", paused: false })
+      .where(eq(investigations.id, investigation.id));
+    const updatedAt = new Date(now.getTime() - 29 * 60_000);
+    const [run] = await database
+      .insert(jobRuns)
+      .values({
+        investigationId: investigation.id,
+        jobName: "investigation.public_research",
+        idempotencyKey: `fresh-public-research:${investigation.id}`,
+        singletonKey: `public_research:${investigation.id}`,
+        status: "running",
+        updatedAt,
+      })
+      .returning();
+    const send = vi.fn(async () => "unexpected-job");
+    const queue = new DurableQueue({ send } as unknown as PgBoss, database);
+
+    expect(
+      await reconcileInvestigations({ type: "worker" }, queue, database, now),
+    ).toBe(0);
+
+    const [unchanged] = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.id, run!.id));
+    expect(unchanged).toMatchObject({
+      status: "running",
+      updatedAt,
+      lastError: null,
+      finishedAt: null,
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not stale-fail active runs without a singleton key", async () => {
+    const now = new Date("2026-05-02T12:00:00.000Z");
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id);
+    await database
+      .update(investigations)
+      .set({ status: "checking_public_sources", paused: false })
+      .where(eq(investigations.id, investigation.id));
+    const updatedAt = new Date(now.getTime() - 60 * 60_000);
+    const [run] = await database
+      .insert(jobRuns)
+      .values({
+        investigationId: investigation.id,
+        jobName: "investigation.public_research",
+        idempotencyKey: `no-singleton-public-research:${investigation.id}`,
+        singletonKey: null,
+        status: "running",
+        updatedAt,
+      })
+      .returning();
+    const send = vi.fn(async () => "unexpected-job");
+    const queue = new DurableQueue({ send } as unknown as PgBoss, database);
+
+    expect(
+      await reconcileInvestigations({ type: "worker" }, queue, database, now),
+    ).toBe(0);
+
+    const [unchanged] = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.id, run!.id));
+    expect(unchanged).toMatchObject({
+      singletonKey: null,
+      status: "running",
+      updatedAt,
+      lastError: null,
+      finishedAt: null,
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("resumes when a succeeded run already used the same stage singleton key", async () => {
+    const admin = await createUser("admin");
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id);
+    const jobName = "investigation.public_research";
+    const singletonKey = `public_research:${investigation.id}`;
+    await database
+      .update(investigations)
+      .set({ status: "checking_public_sources", paused: true })
+      .where(eq(investigations.id, investigation.id));
+    await database.insert(jobRuns).values({
+      investigationId: investigation.id,
+      jobName,
+      idempotencyKey: `${singletonKey}:previous`,
+      singletonKey,
+      status: "succeeded",
+    });
+
+    let sent = 0;
+    const send = vi.fn(async () => `resume-job-${++sent}`);
+    const queue = new DurableQueue({ send } as unknown as PgBoss, database);
+    await resumeInvestigation(
+      { type: "admin", userId: admin.id },
+      investigation.id,
+      queue,
+      database,
+    );
+
+    const [updated] = await database
+      .select({ paused: investigations.paused })
+      .from(investigations)
+      .where(eq(investigations.id, investigation.id));
+    const runs = await database
+      .select()
+      .from(jobRuns)
+      .where(
+        and(
+          eq(jobRuns.investigationId, investigation.id),
+          eq(jobRuns.jobName, jobName),
+        ),
+      );
+    expect(updated!.paused).toBe(false);
+    expect(runs).toHaveLength(2);
+    expect(runs.map((run) => run.status).sort()).toEqual([
+      "queued",
+      "succeeded",
+    ]);
+    expect(
+      runs.find((run) => run.status === "queued")?.singletonKey,
+    ).toBe(singletonKey);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("research requests and authorization", () => {
@@ -849,33 +1136,90 @@ describe("research requests and authorization", () => {
     expect(await database.select().from(claims)).toHaveLength(0);
   });
 
-  it("deduplicates durable job runs before enqueueing with pg-boss", async () => {
-    const send = vi.fn().mockResolvedValue("captured-pgboss-id");
+  it("deduplicates active singleton runs and permanently deduplicates idempotency keys", async () => {
+    let sent = 0;
+    const send = vi.fn(async () => `captured-pgboss-id-${++sent}`);
     const queue = new DurableQueue({ send } as unknown as PgBoss, database);
     const options = { idempotencyKey: "integration:job-once" };
     expect(
       await queue.enqueue("test.idempotency", { safe: true }, options),
-    ).toBe("captured-pgboss-id");
+    ).toBe("captured-pgboss-id-1");
     expect(
       await queue.enqueue("test.idempotency", { safe: true }, options),
     ).toBeNull();
     expect(send).toHaveBeenCalledTimes(1);
+    const singletonKey = `integration:singleton:${randomUUID()}`;
     expect(
       await queue.enqueue(
         "test.singleton",
         { safe: true },
-        { singletonKey: "permanent-singleton" },
+        { singletonKey },
       ),
-    ).toBe("captured-pgboss-id");
+    ).toBe("captured-pgboss-id-2");
     expect(
       await queue.enqueue(
         "test.singleton",
         { safe: true },
-        { singletonKey: "permanent-singleton" },
+        { singletonKey },
       ),
     ).toBeNull();
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(await database.select().from(jobRuns)).toHaveLength(2);
+    const [queuedRun] = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.singletonKey, singletonKey));
+    expect(queuedRun!.status).toBe("queued");
+    await database
+      .update(jobRuns)
+      .set({ status: "running" })
+      .where(eq(jobRuns.id, queuedRun!.id));
+    expect(
+      await queue.enqueue(
+        "test.singleton",
+        { safe: true },
+        { singletonKey },
+      ),
+    ).toBeNull();
+    await database
+      .update(jobRuns)
+      .set({ status: "succeeded" })
+      .where(eq(jobRuns.id, queuedRun!.id));
+    expect(
+      await queue.enqueue(
+        "test.singleton",
+        { safe: true },
+        { singletonKey },
+      ),
+    ).toBe("captured-pgboss-id-3");
+    const singletonRuns = await database
+      .select()
+      .from(jobRuns)
+      .where(eq(jobRuns.singletonKey, singletonKey));
+    expect(singletonRuns).toHaveLength(2);
+    expect(singletonRuns.every((run) => run.singletonKey === singletonKey)).toBe(
+      true,
+    );
+    expect(
+      singletonRuns
+        .find((run) => run.status === "queued")
+        ?.idempotencyKey.startsWith(`${singletonKey}:`),
+    ).toBe(true);
+
+    const permanentKey = `integration:event:${randomUUID()}`;
+    expect(
+      await queue.enqueue(
+        "test.permanent",
+        { safe: true },
+        { idempotencyKey: permanentKey },
+      ),
+    ).toBe("captured-pgboss-id-4");
+    expect(
+      await queue.enqueue(
+        "test.permanent",
+        { safe: true },
+        { idempotencyKey: permanentKey },
+      ),
+    ).toBeNull();
+    expect(send).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -3236,6 +3580,34 @@ describe("remaining requested regressions", () => {
 });
 
 describe("publication notifications and fixture coverage", () => {
+  async function createGoogleProviderInvestigation() {
+    const { business, branch } = await createBranch({
+      businessName: "",
+      branchName: "",
+    });
+    await database
+      .update(branches)
+      .set({
+        detailsSource: "provider",
+        name: "",
+        address: "",
+        city: "",
+        website: null,
+      })
+      .where(eq(branches.id, branch.id));
+    await database
+      .update(businesses)
+      .set({ name: "", website: null })
+      .where(eq(businesses.id, business.id));
+    await database.insert(externalPlaceIds).values({
+      branchId: branch.id,
+      provider: "google",
+      externalId: `google-test:${branch.id}`,
+    });
+    const investigation = await createInvestigation(branch.id);
+    return { branch, investigation };
+  }
+
   async function runProviderResearch(
     googleFormattedAddress: string,
     extractedDetails: ExtractedBusinessDetails,
@@ -3332,6 +3704,123 @@ describe("publication notifications and fixture coverage", () => {
     );
     return { business, branch, investigation, calls, businessDetailsCalls };
   }
+
+  it("waits for Google details quota before fetching or calling AI", async () => {
+    const originalLimit = process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT;
+    process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT = "1";
+    try {
+      const { investigation } = await createGoogleProviderInvestigation();
+      const now = new Date();
+      const dayWindowMs = 24 * 60 * 60 * 1000;
+      await database.insert(rateLimits).values({
+        key: `google:details:${now.toISOString().slice(0, 10)}`,
+        windowStart: new Date(
+          Math.floor(now.getTime() / dayWindowMs) * dayWindowMs,
+        ),
+        count: 1,
+      });
+      const aiProvider = new DemoAIProvider();
+      const extractPublicClaims = vi.spyOn(aiProvider, "extractPublicClaims");
+      const extractBusinessDetails = vi.spyOn(
+        aiProvider,
+        "extractBusinessDetails",
+      );
+      const getPlace = vi.fn(async () => null);
+      const placesProvider: PlacesProvider = {
+        async searchNearby() {
+          return [];
+        },
+        getPlace,
+      };
+      const fetch = vi.fn(async () => {
+        throw new Error("Unexpected website fetch.");
+      });
+      const { queue, calls } = queueRecorder();
+      const handler = buildJobHandlers(database, queue, {
+        aiProvider,
+        placesProvider,
+        fetcher: { fetch },
+      })["investigation.public_research"]!;
+
+      await handler(
+        { investigationId: investigation.id },
+        { jobId: "quota-limited-research", attempt: 1 },
+      );
+
+      const [updated] = await database
+        .select()
+        .from(investigations)
+        .where(eq(investigations.id, investigation.id));
+      expect(updated).toMatchObject({
+        paused: false,
+        stageDetail: "Waiting for Google lookup quota; will retry automatically.",
+        budgetAiCallsUsed: 0,
+      });
+      expect(getPlace).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(extractPublicClaims).not.toHaveBeenCalled();
+      expect(extractBusinessDetails).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+    } finally {
+      if (originalLimit === undefined)
+        delete process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT;
+      else process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT = originalLimit;
+    }
+  });
+
+  it("rethrows sanitized Google lookup errors for worker retries", async () => {
+    const { investigation } = await createGoogleProviderInvestigation();
+    const aiProvider = new DemoAIProvider();
+    const extractPublicClaims = vi.spyOn(aiProvider, "extractPublicClaims");
+    const extractBusinessDetails = vi.spyOn(
+      aiProvider,
+      "extractBusinessDetails",
+    );
+    const getPlace = vi.fn(async () => {
+      throw new Error(
+        "Google Places failed: api_key=private-value contact person@example.test",
+      );
+    });
+    const placesProvider: PlacesProvider = {
+      async searchNearby() {
+        return [];
+      },
+      getPlace,
+    };
+    const fetch = vi.fn(async () => {
+      throw new Error("Unexpected website fetch.");
+    });
+    const { queue, calls } = queueRecorder();
+    const handler = buildJobHandlers(database, queue, {
+      aiProvider,
+      placesProvider,
+      fetcher: { fetch },
+    })["investigation.public_research"]!;
+
+    await expect(
+      handler(
+        { investigationId: investigation.id },
+        { jobId: "provider-error-research", attempt: 1 },
+      ),
+    ).rejects.toThrow(
+      "Google Places failed: api_key=[redacted] contact [redacted email]",
+    );
+
+    expect(getPlace).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(extractPublicClaims).not.toHaveBeenCalled();
+    expect(extractBusinessDetails).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    const [unchanged] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, investigation.id));
+    expect(unchanged).toMatchObject({
+      paused: false,
+      budgetAiCallsUsed: 0,
+    });
+    expect(unchanged!.stageDetail).not.toBe("No usable business contact found.");
+  });
 
   it("deduplicates notifications for every follower", async () => {
     const follower = await createUser("user", "follower@example.test");

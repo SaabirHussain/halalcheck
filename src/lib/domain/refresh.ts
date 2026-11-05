@@ -28,7 +28,7 @@ import { consumeGoogleDetailsLimit } from "@/lib/providers/places/limits";
 import { writeAudit } from "@/lib/domain/audit";
 import { waitingForBusinessDetails } from "@/lib/domain/admin";
 import type { Actor } from "./actor";
-import { stageQueue } from "./investigations";
+import { stageQueue, stageSingletonKey } from "./investigations";
 
 type Database = typeof defaultDb;
 
@@ -217,6 +217,21 @@ export async function reconcileInvestigations(
 ) {
   if (actor.type !== "worker" && actor.type !== "system")
     throw new Error("Worker access required.");
+  await database
+    .update(jobRuns)
+    .set({
+      status: "failed",
+      lastError: "Stale run: worker did not finish.",
+      finishedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        isNotNull(jobRuns.singletonKey),
+        inArray(jobRuns.status, ["queued", "running"]),
+        lt(jobRuns.updatedAt, new Date(now.getTime() - 30 * 60_000)),
+      ),
+    );
   const active = await database
     .select({
       id: investigations.id,
@@ -295,7 +310,7 @@ export async function reconcileInvestigations(
       queueName,
       { investigationId: investigation.id },
       {
-        singletonKey: `${queueName}:${investigation.id}`,
+        singletonKey: stageSingletonKey(queueName, investigation.id),
       },
     );
     enqueued++;

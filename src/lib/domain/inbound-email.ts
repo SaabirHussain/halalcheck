@@ -207,7 +207,7 @@ export async function ingestInboundEmail(
     await queue.enqueue(
       "message.parse",
       { messageId: result.messageId },
-      { singletonKey: `message_parse:${result.messageId}` },
+      { idempotencyKey: `message_parse:${result.messageId}` },
     );
   }
   return result;

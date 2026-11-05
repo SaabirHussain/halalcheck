@@ -1,0 +1,2 @@
+ALTER TABLE "job_runs" ADD COLUMN "singleton_key" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "job_runs_active_singleton_unique" ON "job_runs" USING btree ("job_name","singleton_key") WHERE "job_runs"."status" in ('queued', 'running');

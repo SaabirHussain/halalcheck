@@ -97,22 +97,32 @@ export function buildJobHandlers(
           .where(eq(externalPlaceIds.branchId, branch.id))
           .limit(1);
         website = null;
+        if (!externalPlace) throw new Error("Provider place ID is unavailable.");
         if (
-          externalPlace &&
-          (externalPlace.provider !== "google" ||
-            (await consumeGoogleDetailsLimit(database)))
+          externalPlace.provider === "google" &&
+          !(await consumeGoogleDetailsLimit(database))
         ) {
-          try {
-            const details = await placesProvider.getPlace(
-              externalPlace.externalId,
-              "contact",
-            );
-            website = details?.websiteUri ?? null;
-            googleFormattedAddress = details?.formattedAddress ?? null;
-          } catch {
-            website = null;
-          }
+          await database
+            .update(investigations)
+            .set({
+              stageDetail: "Waiting for Google lookup quota; will retry automatically.",
+              updatedAt: new Date(),
+            })
+            .where(eq(investigations.id, investigationId));
+          return;
         }
+        let details: Awaited<ReturnType<PlacesProvider["getPlace"]>>;
+        try {
+          details = await placesProvider.getPlace(
+            externalPlace.externalId,
+            "contact",
+          );
+        } catch (error) {
+          throw new Error(sanitizeMessage(error));
+        }
+        if (!details) throw new Error("Google Places returned no details.");
+        website = details.websiteUri ?? null;
+        googleFormattedAddress = details.formattedAddress ?? null;
       }
       const domain = website ? new URL(website).hostname : "";
       await database
@@ -677,10 +687,14 @@ function parseRegistryEntries(
 }
 
 function sanitizeMessage(error: unknown) {
-  return (error instanceof Error ? error.message : "Unknown error").slice(
-    0,
-    160,
-  );
+  const message = error instanceof Error ? error.message : "Unknown error";
+  return message
+    .replace(
+      /(api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi,
+      "$1=[redacted]",
+    )
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[redacted email]")
+    .slice(0, 160);
 }
 
 function redactExcerpt(value: string) {

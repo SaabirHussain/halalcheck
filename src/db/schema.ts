@@ -393,6 +393,7 @@ export const jobRuns = pgTable(
     jobName: text("job_name").notNull(),
     pgbossJobId: text("pgboss_job_id"),
     idempotencyKey: text("idempotency_key").notNull().unique(),
+    singletonKey: text("singleton_key"),
     payload: jsonb("payload")
       .$type<Record<string, unknown>>()
       .notNull()
@@ -404,7 +405,12 @@ export const jobRuns = pgTable(
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     ...timestamps,
   },
-  (table) => [index("job_runs_investigation_idx").on(table.investigationId)],
+  (table) => [
+    index("job_runs_investigation_idx").on(table.investigationId),
+    uniqueIndex("job_runs_active_singleton_unique")
+      .on(table.jobName, table.singletonKey)
+      .where(sql`${table.status} in ('queued', 'running')`),
+  ],
 );
 
 export const sources = pgTable(
