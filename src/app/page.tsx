@@ -1,23 +1,70 @@
-export default function HomePage() {
-  return (
-    <main className="mx-auto flex min-h-screen max-w-5xl flex-col justify-center px-6 py-16">
-      <p className="mb-3 text-sm font-semibold uppercase tracking-[0.2em] text-emerald-800">
-        HalalCheck · Demo
-      </p>
-      <h1 className="max-w-2xl text-4xl font-semibold tracking-tight sm:text-6xl">
-        Community research for confident food choices.
-      </h1>
-      <p className="mt-6 max-w-xl text-lg leading-8 text-stone-600">
-        Research findings are evidence-backed, reviewed before publication, and
-        clear about what remains unknown.
-      </p>
-      <div className="mt-10 rounded-2xl border border-emerald-900/10 bg-white p-6 shadow-sm">
-        <p className="font-medium">Backend foundation is running locally.</p>
-        <p className="mt-2 text-sm text-stone-600">
-          Discovery and account interfaces are coming in the next build phase.
-          Demo listings are fictional and are not religious rulings.
-        </p>
-      </div>
-    </main>
-  );
+import { DiscoveryExplorer } from "@/components/discovery/DiscoveryExplorer";
+import type { DiscoveryFilterState } from "@/components/discovery/filter-types";
+import { listPublicBranches } from "@/lib/domain/public";
+import {
+  businessCategories,
+  researchStatuses,
+  type BusinessCategory,
+  type ResearchStatus,
+} from "@/lib/shared/types";
+
+type SearchParams = Record<string, string | string[] | undefined>;
+
+function getValue(params: SearchParams, key: string) {
+  const value = params[key];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function getNumber(value: string | undefined) {
+  if (value === undefined || value.trim() === "") return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+export default async function HomePage({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParams>;
+}) {
+  const params = await searchParams;
+  const category = getValue(params, "category");
+  const status = getValue(params, "status");
+  const certified = getValue(params, "certified");
+  const menu = getValue(params, "menu");
+  const slaughter = getValue(params, "slaughter");
+  const lat = getNumber(getValue(params, "lat"));
+  const lng = getNumber(getValue(params, "lng"));
+  const radiusKm = getNumber(getValue(params, "radiusKm"));
+
+  const initialFilters: DiscoveryFilterState = {
+    q: getValue(params, "q") ?? "",
+    category: businessCategories.includes(category as BusinessCategory)
+      ? (category as BusinessCategory)
+      : undefined,
+    status: researchStatuses.includes(status as ResearchStatus)
+      ? (status as ResearchStatus)
+      : undefined,
+    slaughter:
+      slaughter === "hand" || slaughter === "machine" || slaughter === "mixed"
+        ? slaughter
+        : undefined,
+    certified:
+      certified === "true" || certified === "false" ? certified : undefined,
+    menu: menu === "full" || menu === "partial" ? menu : undefined,
+    radiusKm: radiusKm && [2, 5, 10, 25].includes(radiusKm) ? radiusKm : 25,
+    lat: lat !== undefined && lng !== undefined ? lat : undefined,
+    lng: lat !== undefined && lng !== undefined ? lng : undefined,
+    area: getValue(params, "area")?.slice(0, 100) ?? "Demo City",
+  };
+  const places = await listPublicBranches({
+    ...initialFilters,
+    category: initialFilters.category,
+    status: initialFilters.status,
+    certified:
+      initialFilters.certified === undefined
+        ? undefined
+        : initialFilters.certified === "true",
+  });
+
+  return <DiscoveryExplorer initialFilters={initialFilters} places={places} />;
 }

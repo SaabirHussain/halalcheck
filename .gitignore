@@ -1,8 +1,11 @@
 node_modules/
 .next/
+.next-handoff-build/
 .env
 .env.local
 coverage/
 storage/
 *.log
 tsconfig.tsbuildinfo
+test-results/
+playwright-report/
