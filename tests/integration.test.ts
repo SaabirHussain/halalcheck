@@ -1712,6 +1712,13 @@ describe("webhooks, opt-outs, and outreach", () => {
       database,
     );
     expect(firstSend).toMatchObject({ sent: true, captured: true });
+    const [sentInvestigation] = await database
+      .select({ stageDetail: investigations.stageDetail })
+      .from(investigations)
+      .where(eq(investigations.id, investigation.id));
+    expect(sentInvestigation!.stageDetail).toBe(
+      "Email sent; waiting for the business to reply.",
+    );
     expect(secondSend).toMatchObject({ sent: false });
     expect(await database.select().from(emailOutbox)).toHaveLength(1);
     await setOutreachSettings(
