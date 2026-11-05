@@ -65,7 +65,7 @@ import {
 } from "@/lib/domain/outreach";
 import { publishProposedUpdate } from "@/lib/domain/publishing";
 import { notifyFollowers } from "@/lib/domain/notifications";
-import { getPublicBranch } from "@/lib/domain/public";
+import { getPublicBranch, listPublicBranches } from "@/lib/domain/public";
 import { refreshScan } from "@/lib/domain/refresh";
 import { DemoAIProvider } from "@/lib/providers/ai/demo";
 import {
@@ -152,6 +152,8 @@ async function createBranch(
     city?: string;
     businessName?: string;
     branchName?: string;
+    lat?: number;
+    lng?: number;
   } = {},
 ) {
   const [business] = await database
@@ -171,8 +173,8 @@ async function createBranch(
       name: input.branchName ?? "Eastside",
       address: "10 Demo Street",
       city: input.city ?? "Demo City",
-      lat: 43.65,
-      lng: -79.38,
+      lat: input.lat ?? 43.65,
+      lng: input.lng ?? -79.38,
       website: input.website ?? null,
       timezone: "America/Toronto",
       isDemo: true,
@@ -207,6 +209,42 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await client.end();
+});
+
+describe("public discovery", () => {
+  it("sorts nearby branches by distance and preserves query order without a location", async () => {
+    const [farthest, middle, nearest, origin] = await Promise.all([
+      createBranch({ branchName: "Farthest", lat: 43.7, lng: -79.38 }),
+      createBranch({ branchName: "Middle", lat: 43.65, lng: -79.32 }),
+      createBranch({ branchName: "Nearest", lat: 43.655, lng: -79.38 }),
+      createBranch({ branchName: "Origin", lat: 43.65, lng: -79.38 }),
+    ]);
+    const queryOrder = await database
+      .select({ id: branches.id })
+      .from(branches)
+      .innerJoin(businesses, eq(branches.businessId, businesses.id))
+      .limit(200);
+    const withoutLocation = await listPublicBranches({ limit: 200 }, database);
+    expect(withoutLocation.map((place) => place.id)).toEqual(
+      queryOrder.map((row) => row.id),
+    );
+
+    const nearby = await listPublicBranches(
+      { lat: 43.65, lng: -79.38, radiusKm: 25 },
+      database,
+    );
+    expect(nearby.map((place) => place.id)).toEqual([
+      origin!.branch.id,
+      nearest!.branch.id,
+      middle!.branch.id,
+      farthest!.branch.id,
+    ]);
+    const distances = nearby.map((place) => place.distanceKm);
+    expect(distances.every((distance) => distance !== null)).toBe(true);
+    expect(distances).toEqual(
+      [...distances].sort((a, b) => (a ?? 0) - (b ?? 0)),
+    );
+  });
 });
 
 describe("research requests and authorization", () => {
