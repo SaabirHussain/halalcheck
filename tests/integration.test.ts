@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { Webhook } from "svix";
 import { Response as UndiciResponse, fetch as undiciFetch } from "undici";
 import type PgBoss from "pg-boss";
@@ -72,10 +72,15 @@ import { publishProposedUpdate } from "@/lib/domain/publishing";
 import { notifyFollowers } from "@/lib/domain/notifications";
 import { getPublicBranch, listPublicBranches } from "@/lib/domain/public";
 import {
+  googleMapsPlaceUrl,
+  hydrateAdminBranchRows,
+} from "@/lib/domain/admin-place-references";
+import {
   purgeExpiredProviderCache,
   reconcileInvestigations,
   refreshScan,
 } from "@/lib/domain/refresh";
+import { consumeGoogleDetailsLimit } from "@/lib/providers/places/limits";
 import { searchAndCacheProviderPlaces } from "@/lib/domain/provider-places";
 import { selectSameSiteLinks } from "@/lib/domain/site-links";
 import {
@@ -261,6 +266,155 @@ afterAll(async () => {
 });
 
 describe("public discovery", () => {
+  it("splits Google Place Details quota between public and agent pools", async () => {
+    const originalLimit = process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT;
+    const originalReserve =
+      process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE;
+    process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT = "5";
+    process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE = "2";
+    const now = new Date("2026-05-02T12:00:00.000Z");
+    const nextDay = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    try {
+      for (let index = 0; index < 3; index++) {
+        expect(
+          await consumeGoogleDetailsLimit(database, "public", now),
+        ).toBe(true);
+      }
+      expect(
+        await consumeGoogleDetailsLimit(database, "public", now),
+      ).toBe(false);
+      for (let index = 0; index < 2; index++) {
+        expect(
+          await consumeGoogleDetailsLimit(database, "agent", now),
+        ).toBe(true);
+      }
+      expect(
+        await consumeGoogleDetailsLimit(database, "agent", now),
+      ).toBe(false);
+
+      for (let index = 0; index < 2; index++) {
+        expect(
+          await consumeGoogleDetailsLimit(database, "agent", nextDay),
+        ).toBe(true);
+      }
+      expect(
+        await consumeGoogleDetailsLimit(database, "agent", nextDay),
+      ).toBe(false);
+      for (let index = 0; index < 3; index++) {
+        expect(
+          await consumeGoogleDetailsLimit(database, "public", nextDay),
+        ).toBe(true);
+      }
+      expect(
+        await consumeGoogleDetailsLimit(database, "public", nextDay),
+      ).toBe(false);
+    } finally {
+      if (originalLimit === undefined)
+        delete process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT;
+      else process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT = originalLimit;
+      if (originalReserve === undefined)
+        delete process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE;
+      else
+        process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE =
+          originalReserve;
+    }
+  });
+
+  it("clamps the Google agent reserve between zero and the total limit", async () => {
+    const originalLimit = process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT;
+    const originalReserve =
+      process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE;
+    process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT = "3";
+    process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE = "30";
+    const now = new Date("2026-05-04T12:00:00.000Z");
+    try {
+      expect(
+        await consumeGoogleDetailsLimit(database, "public", now),
+      ).toBe(false);
+      for (let index = 0; index < 3; index++) {
+        expect(
+          await consumeGoogleDetailsLimit(database, "agent", now),
+        ).toBe(true);
+      }
+      expect(
+        await consumeGoogleDetailsLimit(database, "agent", now),
+      ).toBe(false);
+
+      process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE = "-5";
+      const nextDay = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+      expect(
+        await consumeGoogleDetailsLimit(database, "agent", nextDay),
+      ).toBe(false);
+      for (let index = 0; index < 3; index++) {
+        expect(
+          await consumeGoogleDetailsLimit(database, "public", nextDay),
+        ).toBe(true);
+      }
+      expect(
+        await consumeGoogleDetailsLimit(database, "public", nextDay),
+      ).toBe(false);
+    } finally {
+      if (originalLimit === undefined)
+        delete process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT;
+      else process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT = originalLimit;
+      if (originalReserve === undefined)
+        delete process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE;
+      else
+        process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE =
+          originalReserve;
+    }
+  });
+
+  it("hydrates admin provider rows without spending the places quota", async () => {
+    const { branch } = await createBranch();
+    await database
+      .update(branches)
+      .set({ detailsSource: "provider" })
+      .where(eq(branches.id, branch.id));
+    await database.insert(externalPlaceIds).values({
+      branchId: branch.id,
+      provider: "google",
+      externalId: "google-place/admin",
+    });
+
+    const [hydrated] = await hydrateAdminBranchRows(
+      [
+        {
+          branchId: branch.id,
+          detailsSource: "provider",
+          business: "Stored provider name",
+          branch: "Stored branch name",
+        },
+      ],
+      database,
+    );
+
+    expect(hydrated).toMatchObject({
+      business: "Unconfirmed Google place",
+      branch: "",
+      googleMapsUrl: googleMapsPlaceUrl("google-place/admin"),
+    });
+    const [firstParty] = await hydrateAdminBranchRows(
+      [
+        {
+          branchId: branch.id,
+          detailsSource: "first_party",
+          business: "Stored business name",
+          branch: "Stored branch name",
+          address: "10 Demo Street",
+        },
+      ],
+      database,
+    );
+    expect(firstParty).toMatchObject({
+      business: "Stored business name",
+      branch: "Stored branch name",
+      address: "10 Demo Street",
+      googleMapsUrl: null,
+    });
+    expect(await database.select().from(rateLimits)).toHaveLength(0);
+  });
+
   it("sorts nearby branches by distance and preserves query order without a location", async () => {
     const [farthest, middle, nearest, origin] = await Promise.all([
       createBranch({ branchName: "Farthest", lat: 43.7, lng: -79.38 }),
@@ -1558,6 +1712,13 @@ describe("webhooks, opt-outs, and outreach", () => {
       database,
     );
     expect(firstSend).toMatchObject({ sent: true, captured: true });
+    const [sentInvestigation] = await database
+      .select({ stageDetail: investigations.stageDetail })
+      .from(investigations)
+      .where(eq(investigations.id, investigation.id));
+    expect(sentInvestigation!.stageDetail).toBe(
+      "Email sent; waiting for the business to reply.",
+    );
     expect(secondSend).toMatchObject({ sent: false });
     expect(await database.select().from(emailOutbox)).toHaveLength(1);
     await setOutreachSettings(
@@ -3404,6 +3565,105 @@ describe("remaining requested regressions", () => {
     expect(await refreshScan({ type: "worker" }, queue, database, now)).toBe(0);
   });
 
+  it("preserves provider coordinates and stops cache refresh at public quota exhaustion", async () => {
+    const originalLimit = process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT;
+    const originalReserve =
+      process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE;
+    const originalPlacesProvider = process.env.PLACES_PROVIDER;
+    process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT = "1";
+    process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE = "0";
+    process.env.PLACES_PROVIDER = "demo";
+    const now = new Date("2026-05-06T12:00:00.000Z");
+    const staleCachedAt = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
+    const branchesToRefresh = [
+      await createBranch({ branchName: "Provider A" }),
+      await createBranch({ branchName: "Provider B" }),
+    ];
+    for (const { branch } of branchesToRefresh) {
+      await database
+        .update(branches)
+        .set({
+          detailsSource: "provider",
+          providerCachedAt: staleCachedAt,
+          lat: 43.71,
+          lng: -79.41,
+        })
+        .where(eq(branches.id, branch.id));
+      await database.insert(externalPlaceIds).values({
+        branchId: branch.id,
+        provider: "google",
+        externalId: `google-place/${branch.id}`,
+      });
+      await createInvestigation(branch.id);
+    }
+    const dayWindowMs = 24 * 60 * 60 * 1000;
+    await database.insert(rateLimits).values({
+      key: `google:details:public:${now.toISOString().slice(0, 10)}`,
+      windowStart: new Date(
+        Math.floor(now.getTime() / dayWindowMs) * dayWindowMs,
+      ),
+      count: 1,
+    });
+    const auditsBefore = await database.select().from(auditEvents);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { queue, calls } = queueRecorder();
+    try {
+      expect(
+        await refreshScan({ type: "worker" }, queue, database, now),
+      ).toBe(0);
+      expect(warn).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      const refreshedBranches = await database
+        .select()
+        .from(branches)
+        .where(
+          inArray(
+            branches.id,
+            branchesToRefresh.map(({ branch }) => branch.id),
+          ),
+        );
+      expect(
+        refreshedBranches.map((branch) => ({
+          lat: branch.lat,
+          lng: branch.lng,
+          providerCachedAt: branch.providerCachedAt,
+        })),
+      ).toEqual(
+        branchesToRefresh.map(() => ({
+          lat: 43.71,
+          lng: -79.41,
+          providerCachedAt: staleCachedAt,
+        })),
+      );
+      const [usage] = await database
+        .select()
+        .from(rateLimits)
+        .where(
+          eq(
+            rateLimits.key,
+            `google:details:public:${now.toISOString().slice(0, 10)}`,
+          ),
+        );
+      expect(usage!.count).toBe(2);
+      expect(await database.select().from(auditEvents)).toHaveLength(
+        auditsBefore.length,
+      );
+    } finally {
+      warn.mockRestore();
+      if (originalLimit === undefined)
+        delete process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT;
+      else process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT = originalLimit;
+      if (originalReserve === undefined)
+        delete process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE;
+      else
+        process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE =
+          originalReserve;
+      if (originalPlacesProvider === undefined)
+        delete process.env.PLACES_PROVIDER;
+      else process.env.PLACES_PROVIDER = originalPlacesProvider;
+    }
+  });
+
   it("sets investigation stage detail when a durable job exhausts retries", async () => {
     const { branch } = await createBranch();
     const investigation = await createInvestigation(branch.id);
@@ -3707,13 +3967,16 @@ describe("publication notifications and fixture coverage", () => {
 
   it("waits for Google details quota before fetching or calling AI", async () => {
     const originalLimit = process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT;
+    const originalReserve =
+      process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE;
     process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT = "1";
+    process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE = "1";
     try {
       const { investigation } = await createGoogleProviderInvestigation();
       const now = new Date();
       const dayWindowMs = 24 * 60 * 60 * 1000;
       await database.insert(rateLimits).values({
-        key: `google:details:${now.toISOString().slice(0, 10)}`,
+        key: `google:details:agent:${now.toISOString().slice(0, 10)}`,
         windowStart: new Date(
           Math.floor(now.getTime() / dayWindowMs) * dayWindowMs,
         ),
@@ -3765,6 +4028,11 @@ describe("publication notifications and fixture coverage", () => {
       if (originalLimit === undefined)
         delete process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT;
       else process.env.GOOGLE_PLACES_DETAILS_DAILY_LIMIT = originalLimit;
+      if (originalReserve === undefined)
+        delete process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE;
+      else
+        process.env.GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE =
+          originalReserve;
     }
   });
 

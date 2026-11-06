@@ -100,7 +100,7 @@ export function buildJobHandlers(
         if (!externalPlace) throw new Error("Provider place ID is unavailable.");
         if (
           externalPlace.provider === "google" &&
-          !(await consumeGoogleDetailsLimit(database))
+          !(await consumeGoogleDetailsLimit(database, "agent"))
         ) {
           await database
             .update(investigations)

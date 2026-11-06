@@ -1084,7 +1084,14 @@ export async function sendOutreach(
       .where(eq(outreachMessages.id, message.id));
     await tx
       .update(investigations)
-      .set({ status: "awaiting_business_response", updatedAt: sentAt })
+      .set({
+        status: "awaiting_business_response",
+        stageDetail:
+          message.kind === "followup"
+            ? "Follow-up sent; waiting for the business to reply."
+            : "Email sent; waiting for the business to reply.",
+        updatedAt: sentAt,
+      })
       .where(eq(investigations.id, thread.investigationId));
     await tx
       .update(branches)

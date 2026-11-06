@@ -303,7 +303,7 @@ export async function hydrateProviderBranches<T extends HydratableBranch>(
       if (
         !externalPlace ||
         (externalPlace.provider === "google" &&
-          !(await consumeGoogleDetailsLimit(database)))
+          !(await consumeGoogleDetailsLimit(database, "public")))
       ) {
         return {
           ...row,

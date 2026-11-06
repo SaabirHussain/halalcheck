@@ -11,7 +11,7 @@ import {
   reviewCorrectionAdminAction,
 } from "@/app/admin/actions";
 import { formatAdminDateTime, humanizeLabel } from "@/lib/labels";
-import { hydrateProviderBranches } from "@/lib/domain/public";
+import { hydrateAdminBranchRows } from "@/lib/domain/admin-place-references";
 import { GoogleAttribution } from "@/components/ui/GoogleAttribution";
 
 export default async function CorrectionDetail({
@@ -53,15 +53,14 @@ export default async function CorrectionDetail({
   if (!correction) {
     return <p className="text-muted">Correction not found.</p>;
   }
-  const [place] = await hydrateProviderBranches([
+  const [place] = await hydrateAdminBranchRows([
     {
-      id: correction.branchId,
+      branchId: correction.branchId,
       detailsSource: correction.detailsSource,
-      name: correction.businessName,
-      branchName: correction.branchName,
+      business: correction.businessName,
+      branch: correction.branchName,
       address: correction.address,
       city: correction.city,
-      attribution: false,
     },
   ]);
 
@@ -74,11 +73,20 @@ export default async function CorrectionDetail({
             : "Community correction"}
         </p>
         <h2 className="mt-1 break-words font-display text-2xl font-semibold">
-          {place!.name} · {place!.branchName}
+          {place!.business}
+          {place!.branch ? ` · ${place!.branch}` : ""}
         </h2>
-        {place!.attribution ? (
+        {place!.googleMapsUrl ? (
           <div className="mt-2">
             <GoogleAttribution />
+            <a
+              className="ml-2 text-sm font-semibold text-accent underline"
+              href={place!.googleMapsUrl}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              View on Google Maps
+            </a>
           </div>
         ) : null}
         <p className="mt-2 text-sm text-muted">

@@ -32,7 +32,7 @@ export async function GET(
   }
   if (
     placeId.provider === "google" &&
-    !(await consumeGoogleDetailsLimit(db))
+    !(await consumeGoogleDetailsLimit(db, "public"))
   ) {
     return NextResponse.json({
       notice: "Place details are temporarily unavailable",

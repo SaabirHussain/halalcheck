@@ -169,6 +169,11 @@ omits provider places.
 Search and Place Details calls are capped by
 `GOOGLE_PLACES_SEARCH_DAILY_LIMIT` and `GOOGLE_PLACES_DETAILS_DAILY_LIMIT`
 (both default to 150); searches are also limited to 60 per hour per client IP.
+Place Details capacity is split between public lookups (including the
+stale-coordinate refresh scan) and the research agent:
+`GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE` defaults to 30 (clamped between
+zero and the total details limit), and the public pool can use the remaining
+daily capacity. Admin pages do not make live Place Details requests.
 When Google is selected without an explicit location, the first search uses
 `DISCOVERY_DEFAULT_CENTER=43.6532,-79.3832` (Toronto). The app keeps Google
 place IDs indefinitely and refreshes coordinates within 30 days; names,
