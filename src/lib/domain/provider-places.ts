@@ -74,13 +74,24 @@ export async function searchAndCacheProviderPlaces(
     };
   }
 
-  const places = await provider.searchNearby({
-    lat: effectiveFilters.lat,
-    lng: effectiveFilters.lng,
-    radiusKm: effectiveFilters.radiusKm ?? 20,
-    category: effectiveFilters.category,
-    query: effectiveFilters.q,
-  });
+  let places: PlaceResult[];
+  try {
+    places = await provider.searchNearby({
+      lat: effectiveFilters.lat,
+      lng: effectiveFilters.lng,
+      radiusKm: effectiveFilters.radiusKm ?? 20,
+      category: effectiveFilters.category,
+      query: effectiveFilters.q,
+    });
+  } catch (error) {
+    console.error("Google Places search failed:", error);
+    return {
+      filters: effectiveFilters,
+      overlay,
+      notice:
+        "Google Places search is temporarily unavailable. Showing reviewed places only.",
+    };
+  }
   for (const place of places) {
     const saved = await cacheProviderPlace(place, database, now);
     if (saved.detailsSource === "provider") {

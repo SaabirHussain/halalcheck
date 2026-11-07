@@ -558,6 +558,34 @@ describe("public discovery", () => {
     }
   });
 
+  it("returns reviewed places when the Google search provider fails", async () => {
+    const originalProvider = process.env.PLACES_PROVIDER;
+    process.env.PLACES_PROVIDER = "demo";
+    try {
+      const result = await searchAndCacheProviderPlaces(
+        { lat: 43.65, lng: -79.38, radiusKm: 20 },
+        "203.0.113.7",
+        database,
+        new Date(),
+        {
+          async searchNearby() {
+            throw new Error("Places provider returned 403.");
+          },
+          async getPlace() {
+            return null;
+          },
+        },
+      );
+      expect(result.overlay.size).toBe(0);
+      expect(result.notice).toBe(
+        "Google Places search is temporarily unavailable. Showing reviewed places only.",
+      );
+    } finally {
+      if (originalProvider === undefined) delete process.env.PLACES_PROVIDER;
+      else process.env.PLACES_PROVIDER = originalProvider;
+    }
+  });
+
   it("uses the configured Toronto center for a no-location Google search", async () => {
     const originalProvider = process.env.PLACES_PROVIDER;
     const originalKey = process.env.GOOGLE_PLACES_API_KEY;
