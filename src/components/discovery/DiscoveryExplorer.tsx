@@ -265,7 +265,7 @@ export function DiscoveryExplorer({
         />
         <button
           aria-label="Search places"
-          className="absolute right-1 top-1/2 grid size-10 -translate-y-1/2 place-items-center rounded-lg bg-accent text-white hover:bg-accent-strong disabled:opacity-60 sm:static sm:size-12 sm:translate-y-0 sm:px-6"
+          className="absolute right-1 top-1/2 grid size-10 -translate-y-1/2 place-items-center rounded-lg bg-accent text-white hover:bg-accent-strong disabled:opacity-60 sm:static sm:h-12 sm:w-auto sm:grid-flow-col sm:gap-2 sm:translate-y-0 sm:px-5"
           disabled={isPending}
           type="submit"
         >
