@@ -1,4 +1,7 @@
+import { supportUrl } from "@/lib/support";
+
 export default function PrivacyPage() {
+  const donateUrl = supportUrl();
   return (
     <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <p className="mb-5 rounded-lg border border-warn/20 bg-warn-soft px-3 py-2 text-sm font-semibold text-warn">
@@ -89,6 +92,16 @@ export default function PrivacyPage() {
             deployed service.
           </p>
         </section>
+        {donateUrl ? (
+          <section>
+            <h2 className="font-semibold">Donations</h2>
+            <p className="mt-1">
+              If you donate through Ko-fi, Ko-fi and its payment processors
+              collect and process your payment details under their own privacy
+              policies. HalalCheck does not receive your card details.
+            </p>
+          </section>
+        ) : null}
       </div>
     </main>
   );
