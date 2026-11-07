@@ -49,7 +49,7 @@ export default async function RootLayout({
 
   return (
     <html lang="en" className={`${inter.variable} ${fraunces.variable}`}>
-      <body className="min-h-screen bg-background font-sans text-ink">
+      <body className="min-h-screen bg-background pb-[calc(5rem+env(safe-area-inset-bottom))] font-sans text-ink md:pb-0">
         <NativeShell
           userId={user?.id ?? null}
           pushEnabled={process.env.PUSH_PROVIDER === "fcm-apns"}
@@ -57,7 +57,7 @@ export default async function RootLayout({
         <SiteHeader user={user} unreadCount={unread?.value ?? 0} />
         <OfflineBanner />
         <DemoBanner />
-        <div className="min-h-[calc(100vh-4rem)] pb-24 md:pb-0">{children}</div>
+        <div className="min-h-[calc(100vh-4rem)]">{children}</div>
         <MobileTabBar user={user} unreadCount={unread?.value ?? 0} />
         <SiteFooter />
       </body>
