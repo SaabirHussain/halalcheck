@@ -1,4 +1,24 @@
 const genericPrefixes = ["info", "contact", "hello", "office", "manager"];
+const thirdPartyListingDomains = [
+  "order.online",
+  "doordash.com",
+  "ubereats.com",
+  "skipthedishes.com",
+  "grubhub.com",
+  "seamless.com",
+  "postmates.com",
+  "fantuan.ca",
+  "ritual.co",
+  "toasttab.com",
+  "facebook.com",
+  "instagram.com",
+  "linktr.ee",
+  "yelp.com",
+  "yelp.ca",
+  "tripadvisor.com",
+  "tripadvisor.ca",
+  "google.com",
+];
 
 export type BusinessEmailClassification = {
   email: string;
@@ -15,6 +35,17 @@ function normalizedDomain(value: string) {
 
 export function domainsMatchWithWwwApex(a: string, b: string) {
   return normalizedDomain(a) === normalizedDomain(b);
+}
+
+export function isThirdPartyListingUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return thirdPartyListingDomains.some(
+      (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function classifyBusinessEmails(

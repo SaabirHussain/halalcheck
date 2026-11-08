@@ -20,6 +20,7 @@ import {
   favorites,
   investigations,
   jobRuns,
+  proposedUpdates,
 } from "@/db/schema";
 import type { JobQueue } from "@/lib/jobs/types";
 import { getPlacesProvider } from "@/lib/providers/places";
@@ -278,6 +279,19 @@ export async function reconcileInvestigations(
     }
     const queueName = stageQueue(investigation.status);
     if (!queueName) continue;
+    if (investigation.status === "reviewing_evidence") {
+      const pendingProposal = await database
+        .select({ id: proposedUpdates.id })
+        .from(proposedUpdates)
+        .where(
+          and(
+            eq(proposedUpdates.investigationId, investigation.id),
+            eq(proposedUpdates.status, "pending"),
+          ),
+        )
+        .limit(1);
+      if (pendingProposal.length) continue;
+    }
     const activeJob = await database
       .select({ id: jobRuns.id })
       .from(jobRuns)

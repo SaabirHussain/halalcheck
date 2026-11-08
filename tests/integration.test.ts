@@ -1000,6 +1000,45 @@ describe("investigation reconciliation", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it("only reconciles evidence review when no pending proposal exists", async () => {
+    const pendingBranch = await createBranch();
+    const pendingInvestigation = await createInvestigation(
+      pendingBranch.branch.id,
+    );
+    const noProposalBranch = await createBranch();
+    const noProposalInvestigation = await createInvestigation(
+      noProposalBranch.branch.id,
+    );
+    for (const investigation of [pendingInvestigation, noProposalInvestigation]) {
+      await database
+        .update(investigations)
+        .set({ status: "reviewing_evidence", paused: false })
+        .where(eq(investigations.id, investigation.id));
+    }
+    await database.insert(proposedUpdates).values({
+      branchId: pendingBranch.branch.id,
+      investigationId: pendingInvestigation.id,
+      status: "pending",
+      publicSummary: "Pending review.",
+    });
+
+    const { queue, calls } = queueRecorder();
+    expect(
+      await reconcileInvestigations(
+        { type: "worker" },
+        queue,
+        database,
+        new Date(),
+      ),
+    ).toBe(1);
+    expect(calls).toEqual([
+      {
+        name: "investigation.evidence_review",
+        payload: { investigationId: noProposalInvestigation.id },
+      },
+    ]);
+  });
+
   it("shares public-research singleton keys between reconcile and other callers", async () => {
     const { branch: existingBranch } = await createBranch();
     const existing = await createInvestigation(existingBranch.id);
@@ -4116,6 +4155,55 @@ describe("publication notifications and fixture coverage", () => {
       budgetAiCallsUsed: 0,
     });
     expect(unchanged!.stageDetail).not.toBe("No usable business contact found.");
+  });
+
+  it("sends third-party listing websites to evidence review without fetching them", async () => {
+    const { investigation } = await createGoogleProviderInvestigation();
+    const placesProvider: PlacesProvider = {
+      async searchNearby() {
+        return [];
+      },
+      async getPlace(externalId) {
+        return {
+          id: externalId,
+          displayName: "Sultan's",
+          formattedAddress: "10 Demo Street, Demo City",
+          location: { latitude: 43.65, longitude: -79.38 },
+          types: ["restaurant"],
+          websiteUri: "https://order.online/store/abc",
+        };
+      },
+    };
+    const fetch = vi.fn(async (url: string) => {
+      throw new Error(`Unexpected website fetch: ${url}`);
+    });
+    const { queue, calls } = queueRecorder();
+    const handler = buildJobHandlers(database, queue, {
+      aiProvider: new DemoAIProvider(),
+      placesProvider,
+      fetcher: { fetch },
+    })["investigation.public_research"]!;
+
+    await handler(
+      { investigationId: investigation.id },
+      { jobId: "third-party-website", attempt: 1 },
+    );
+
+    expect(
+      fetch.mock.calls.some(([url]) => url.includes("order.online")),
+    ).toBe(false);
+    const [updated] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, investigation.id));
+    expect(updated).toMatchObject({
+      status: "reviewing_evidence",
+      stageDetail: "No usable business contact found.",
+    });
+    expect(calls).toContainEqual({
+      name: "investigation.evidence_review",
+      payload: { investigationId: investigation.id },
+    });
   });
 
   it("deduplicates notifications for every follower", async () => {
