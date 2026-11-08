@@ -43,6 +43,7 @@ import {
   removeSuppression,
   reviewCertificate,
   reviewContactEndpoint,
+  setBranchPhoto,
   updateSourceExcerpt,
 } from "@/lib/domain/admin";
 import {
@@ -54,6 +55,36 @@ import { refreshScan } from "@/lib/domain/refresh";
 
 function actorFor(user: { id: string }) {
   return { type: "admin" as const, userId: user.id };
+}
+
+export async function uploadBranchPhotoAction(form: FormData) {
+  const user = await requireAdmin();
+  const branchId = String(form.get("branchId") ?? "");
+  const file = form.get("photo");
+  if (!(file instanceof File) || file.size === 0) {
+    throw new Error("Choose a photo to upload.");
+  }
+  await setBranchPhoto(
+    actorFor(user),
+    {
+      branchId,
+      upload: {
+        bytes: new Uint8Array(await file.arrayBuffer()),
+        mime: file.type,
+      },
+    },
+    db,
+  );
+  revalidatePath(`/places/${branchId}`);
+  revalidatePath("/");
+}
+
+export async function removeBranchPhotoAction(form: FormData) {
+  const user = await requireAdmin();
+  const branchId = String(form.get("branchId") ?? "");
+  await setBranchPhoto(actorFor(user), { branchId, upload: null }, db);
+  revalidatePath(`/places/${branchId}`);
+  revalidatePath("/");
 }
 
 export async function pauseInvestigationAction(form: FormData) {

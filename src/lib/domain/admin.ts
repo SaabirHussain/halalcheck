@@ -22,6 +22,10 @@ import type { Actor } from "./actor";
 import { requireAdminActor } from "./actor";
 import { writeAudit } from "./audit";
 import { ingestInboundEmail } from "./inbound-email";
+import {
+  deletePublicPhoto,
+  storePublicPhoto,
+} from "@/lib/providers/storage/local";
 
 type Database = typeof defaultDb;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -182,6 +186,68 @@ export async function confirmProviderBusinessDetails(
     );
   }
   return { resumedInvestigationId };
+}
+
+export async function setBranchPhoto(
+  actor: Actor,
+  input: {
+    branchId: string;
+    upload: { bytes: Uint8Array; mime: string } | null;
+  },
+  database: Database = defaultDb,
+) {
+  const admin = await requireAdminActor(actor, database);
+  const uploadedPhoto: { key?: string } = {};
+  let result: { previousImageUrl: string | null; imageUrl: string | null };
+
+  try {
+    result = await database.transaction(async (tx) => {
+      const [branch] = await tx
+        .select({ imageUrl: branches.imageUrl })
+        .from(branches)
+        .where(eq(branches.id, input.branchId))
+        .for("update")
+        .limit(1);
+      if (!branch) throw new Error("Branch not found.");
+
+      let imageUrl: string | null = null;
+      if (input.upload) {
+        const stored = await storePublicPhoto(
+          input.upload.bytes,
+          input.upload.mime,
+        );
+        uploadedPhoto.key = stored.key;
+        imageUrl = `/api/photos/${stored.key}`;
+      }
+
+      const [updated] = await tx
+        .update(branches)
+        .set({ imageUrl, updatedAt: new Date() })
+        .where(eq(branches.id, input.branchId))
+        .returning({ id: branches.id });
+      if (!updated) throw new Error("Branch not found.");
+      await writeAudit(tx, {
+        actorUserId: admin.id,
+        actorType: "admin",
+        action: input.upload
+          ? "branch_photo_updated"
+          : "branch_photo_removed",
+        entityType: "branch",
+        entityId: input.branchId,
+      });
+      return { previousImageUrl: branch.imageUrl, imageUrl };
+    });
+  } catch (error) {
+    if (uploadedPhoto.key) await deletePublicPhoto(uploadedPhoto.key);
+    throw error;
+  }
+
+  if (result.previousImageUrl?.startsWith("/api/photos/")) {
+    await deletePublicPhoto(
+      result.previousImageUrl.slice("/api/photos/".length),
+    );
+  }
+  return { imageUrl: result.imageUrl };
 }
 
 export async function addContactEndpoint(

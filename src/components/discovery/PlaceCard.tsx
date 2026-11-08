@@ -84,7 +84,7 @@ export function PlaceCard({
             className="object-cover transition duration-300 group-hover:scale-[1.02]"
             fill
             sizes="(max-width: 767px) 100vw, (max-width: 1023px) 50vw, 36vw"
-            src={illustrationForPlace(place)}
+            src={place.imageUrl ?? illustrationForPlace(place)}
           />
         </div>
         <div className="grid gap-2.5 p-4">

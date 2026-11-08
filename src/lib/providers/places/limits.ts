@@ -62,3 +62,26 @@ export async function consumeGoogleDetailsLimit(
   );
   return daily.allowed;
 }
+
+export async function consumeGooglePhotoLimit(
+  database: Database,
+  ip: string,
+  now = new Date(),
+) {
+  const perIp = await consumeRateLimit(
+    database,
+    `google:photo:ip:${ip}`,
+    10,
+    60 * 60 * 1000,
+    now,
+  );
+  if (!perIp.allowed) return false;
+  const daily = await consumeRateLimit(
+    database,
+    `google:photo:${now.toISOString().slice(0, 10)}`,
+    configuredLimit("GOOGLE_PLACES_PHOTO_DAILY_LIMIT", 30),
+    dayWindowMs,
+    now,
+  );
+  return daily.allowed;
+}

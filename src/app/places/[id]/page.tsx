@@ -47,6 +47,7 @@ export default async function PlacePage({
   return (
     <PlacePageContent
       isFollowing={Boolean(active && subscription[0])}
+      isAdmin={user?.role === "admin"}
       isSaved={Boolean(saved[0])}
       place={place}
       signedIn={Boolean(user)}

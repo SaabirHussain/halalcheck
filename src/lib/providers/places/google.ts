@@ -14,6 +14,14 @@ type GooglePlace = {
   nationalPhoneNumber?: string;
   websiteUri?: string;
   types?: string[];
+  photos?: Array<{
+    name?: string;
+    authorAttributions?: Array<{
+      displayName?: string;
+      uri?: string;
+    }>;
+    googleMapsUri?: string;
+  }>;
 };
 
 const categoryWords: Record<BusinessCategory, string> = {
@@ -92,7 +100,7 @@ export class GooglePlacesProvider implements PlacesProvider {
     level: "summary" | "contact",
   ): Promise<PlaceDetails | null> {
     const fields =
-      "id,displayName,formattedAddress,location,types" +
+      "id,displayName,formattedAddress,location,types,photos" +
       (level === "contact" ? ",websiteUri,nationalPhoneNumber" : "");
     const response = await fetch(
       `https://places.googleapis.com/v1/places/${encodeURIComponent(externalId)}`,
@@ -116,6 +124,7 @@ export class GooglePlacesProvider implements PlacesProvider {
     ) {
       return null;
     }
+    const photo = place.photos?.[0];
     return {
       id: place.id,
       displayName: place.displayName.text,
@@ -130,6 +139,17 @@ export class GooglePlacesProvider implements PlacesProvider {
         : {}),
       ...(level === "contact" && place.nationalPhoneNumber
         ? { nationalPhoneNumber: place.nationalPhoneNumber }
+        : {}),
+      ...(photo?.name
+        ? {
+            photo: {
+              name: photo.name,
+              authorName:
+                photo.authorAttributions?.[0]?.displayName ?? null,
+              authorUri: photo.authorAttributions?.[0]?.uri ?? null,
+              googleMapsUri: photo.googleMapsUri ?? null,
+            },
+          }
         : {}),
     };
   }
