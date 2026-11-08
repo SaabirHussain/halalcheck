@@ -175,10 +175,14 @@ stale-coordinate refresh scan) and the research agent:
 `GOOGLE_PLACES_AGENT_DETAILS_DAILY_RESERVE` defaults to 30 (clamped between
 zero and the total details limit), and the public pool can use the remaining
 daily capacity. Admin pages do not make live Place Details requests.
+Place-page photos are limited to 10 per hour per client IP and
+`GOOGLE_PLACES_PHOTO_DAILY_LIMIT` per day (default 30, within Google's 1,000
+free photos per month). Place cards use only admin-uploaded photos.
 When Google is selected without an explicit location, the first search uses
 `DISCOVERY_DEFAULT_CENTER=43.6532,-79.3832` (Toronto). The app keeps Google
 place IDs indefinitely and refreshes coordinates within 30 days; names,
-addresses, websites, and phone numbers are fetched live and not saved.
+addresses, websites, phone numbers, and photo references are fetched live and
+not saved.
 
 Provider places have no first-party business details initially. The worker
 checks up to 50 physical locations listed on the official website and matches
@@ -263,6 +267,7 @@ values are public and are embedded in the client.
 | `TEST_DATABASE_URL`        | Isolated PostgreSQL database used by integration tests.    |
 | `APP_URL`                  | Canonical application URL for links and callbacks.         |
 | `APP_ALLOWED_ORIGINS`      | Optional comma-separated additional browser origins.       |
+| `GOOGLE_PLACES_PHOTO_DAILY_LIMIT` | Daily live Google photo request cap (default 30). |
 | `DEMO_MODE`                | Enables fictional demo fixtures and demo-only behavior.    |
 | `QUEUE_DRIVER`             | Queue adapter selection (`pg-boss` in normal local setup). |
 | `REFRESH_AFTER_DAYS`       | Age threshold for considering published research stale.    |

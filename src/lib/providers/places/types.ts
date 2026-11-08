@@ -26,6 +26,12 @@ export type PlaceDetails = {
   types: string[];
   websiteUri?: string;
   nationalPhoneNumber?: string;
+  photo?: {
+    name: string;
+    authorName: string | null;
+    authorUri: string | null;
+    googleMapsUri: string | null;
+  };
 };
 
 export interface PlacesProvider {

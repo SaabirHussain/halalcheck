@@ -5,11 +5,19 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import type { getPublicBranch } from "@/lib/domain/public";
 import { illustrationForPlace } from "@/components/discovery/illustration";
 import type { DiscoveryPlace } from "@/components/discovery/PlaceCard";
+import {
+  removeBranchPhotoAction,
+  uploadBranchPhotoAction,
+} from "@/app/admin/actions";
+import type { PlaceDetails } from "@/lib/providers/places/types";
+import { GooglePlacePhoto } from "./GooglePlacePhoto";
 import { PlaceActions } from "./PlaceActions";
 import { PlaceMap } from "./PlaceMap";
 import { GoogleAttribution } from "@/components/ui/GoogleAttribution";
 
-type Place = NonNullable<Awaited<ReturnType<typeof getPublicBranch>>>;
+type Place = NonNullable<Awaited<ReturnType<typeof getPublicBranch>>> & {
+  googlePhoto?: PlaceDetails["photo"] | null;
+};
 type PublicClaim = Place["claims"][number];
 
 const products: Record<string, string> = {
@@ -144,11 +152,13 @@ function Stepper({ status }: { status: string }) {
 export function PlacePageContent({
   place,
   signedIn,
+  isAdmin,
   isFollowing,
   isSaved,
 }: {
   place: Place;
   signedIn: boolean;
+  isAdmin: boolean;
   isFollowing: boolean;
   isSaved: boolean;
 }) {
@@ -212,14 +222,24 @@ export function PlacePageContent({
         className="grid gap-5 md:grid-cols-[1.15fr_0.85fr]"
       >
         <div className="relative min-h-60 overflow-hidden rounded-card bg-surface-2 sm:min-h-80">
-          <Image
-            alt=""
-            className="object-cover"
-            fill
-            priority
-            sizes="(max-width: 767px) 100vw, 60vw"
-            src={illustrationForPlace(place)}
-          />
+          {!place.imageUrl && place.googlePhoto ? (
+            <GooglePlacePhoto
+              authorName={place.googlePhoto.authorName}
+              authorUri={place.googlePhoto.authorUri}
+              fallbackSrc={illustrationForPlace(place)}
+              googleMapsUri={place.googlePhoto.googleMapsUri}
+              name={place.googlePhoto.name}
+            />
+          ) : (
+            <Image
+              alt=""
+              className="object-cover"
+              fill
+              priority
+              sizes="(max-width: 767px) 100vw, 60vw"
+              src={place.imageUrl ?? illustrationForPlace(place)}
+            />
+          )}
         </div>
         <div className="flex flex-col justify-center gap-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -254,6 +274,45 @@ export function PlacePageContent({
           </p>
         </div>
       </section>
+
+      {isAdmin ? (
+        <section className="my-6 rounded-card border border-border bg-surface p-4">
+          <h2 className="font-display text-xl font-semibold">
+            Place photo (admin only)
+          </h2>
+          <p className="mt-1 text-sm text-muted">
+            Use only photos you took or have permission to use. Shown on the
+            place card and page.
+          </p>
+          <form
+            action={uploadBranchPhotoAction}
+            className="mt-4 flex flex-wrap items-end gap-3"
+          >
+            <input name="branchId" type="hidden" value={place.id} />
+            <label className="grid gap-1.5 text-sm font-medium">
+              <span>Photo</span>
+              <input
+                accept="image/jpeg,image/png,image/webp"
+                className="max-w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+                name="photo"
+                required
+                type="file"
+              />
+            </label>
+            <button className="min-h-11 rounded-xl bg-accent px-4 font-semibold text-white hover:bg-accent-strong">
+              Upload
+            </button>
+          </form>
+          {place.imageUrl?.startsWith("/api/photos/") ? (
+            <form action={removeBranchPhotoAction} className="mt-3">
+              <input name="branchId" type="hidden" value={place.id} />
+              <button className="min-h-11 rounded-xl border border-border px-4 font-semibold text-ink hover:bg-surface-2">
+                Remove
+              </button>
+            </form>
+          ) : null}
+        </section>
+      ) : null}
 
       <div className="my-6">
         <PlaceActions

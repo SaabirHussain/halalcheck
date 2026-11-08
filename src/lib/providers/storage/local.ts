@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const maxBytes = Number(process.env.MAX_UPLOAD_BYTES ?? 5_242_880);
 const storageRoot = path.resolve(process.env.STORAGE_DIR ?? "./storage");
+const publicPhotosRoot = path.resolve(storageRoot, "public-photos");
 
 const fileTypes = [
   { mime: "application/pdf", extension: "pdf", prefix: [0x25, 0x50, 0x44, 0x46] },
@@ -37,6 +38,58 @@ export async function storeEvidenceUpload(
     sizeBytes: bytes.byteLength,
     sha256: createHash("sha256").update(bytes).digest("hex"),
   };
+}
+
+export async function storePublicPhoto(
+  bytes: Uint8Array,
+  declaredMime: string,
+): Promise<{ key: string }> {
+  if (bytes.byteLength > maxBytes) throw new Error("Upload exceeds MAX_UPLOAD_BYTES.");
+  const mime = detectEvidenceMime(bytes);
+  if (
+    !mime ||
+    !["image/png", "image/jpeg", "image/webp"].includes(mime) ||
+    mime !== declaredMime
+  ) {
+    throw new Error("Upload type does not match its file signature.");
+  }
+  if (
+    mime === "image/webp" &&
+    Buffer.from(bytes.slice(8, 12)).toString() !== "WEBP"
+  ) {
+    throw new Error("Invalid WebP file signature.");
+  }
+  const extension = fileTypes.find((type) => type.mime === mime)!.extension;
+  const key = `${randomUUID()}.${extension}`;
+  await mkdir(publicPhotosRoot, { recursive: true, mode: 0o755 });
+  await writeFile(path.join(publicPhotosRoot, key), bytes, {
+    mode: 0o644,
+    flag: "wx",
+  });
+  return { key };
+}
+
+function publicPhotoPath(key: string) {
+  if (!/^[0-9a-f-]{36}\.(png|jpg|webp)$/.test(key)) {
+    throw new Error("Invalid public photo key.");
+  }
+  const resolved = path.resolve(publicPhotosRoot, key);
+  if (!resolved.startsWith(`${publicPhotosRoot}${path.sep}`)) {
+    throw new Error("Invalid public photo path.");
+  }
+  return resolved;
+}
+
+export async function readPublicPhoto(key: string) {
+  return readFile(publicPhotoPath(key));
+}
+
+export async function deletePublicPhoto(key: string) {
+  try {
+    await unlink(publicPhotoPath(key));
+  } catch {
+    return;
+  }
 }
 
 export async function readEvidence(storageKey: string) {

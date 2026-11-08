@@ -80,14 +80,22 @@ import {
   reconcileInvestigations,
   refreshScan,
 } from "@/lib/domain/refresh";
-import { consumeGoogleDetailsLimit } from "@/lib/providers/places/limits";
 import { searchAndCacheProviderPlaces } from "@/lib/domain/provider-places";
 import { selectSameSiteLinks } from "@/lib/domain/site-links";
 import {
   confirmProviderBusinessDetails,
+  setBranchPhoto,
   waitingForAutomaticBusinessDetails,
   waitingForBusinessDetails,
 } from "@/lib/domain/admin";
+import {
+  consumeGoogleDetailsLimit,
+  consumeGooglePhotoLimit,
+} from "@/lib/providers/places/limits";
+import {
+  deletePublicPhoto,
+  readPublicPhoto,
+} from "@/lib/providers/storage/local";
 import { DemoAIProvider } from "@/lib/providers/ai/demo";
 import {
   OpenAICompatibleProvider,
@@ -726,6 +734,134 @@ describe("public discovery", () => {
       phone: null,
     });
     expect(refreshed!.providerCachedAt).toEqual(now);
+  });
+});
+
+describe("public place photos", () => {
+  it("sets and removes an administrator-uploaded branch photo", async () => {
+    const admin = await createUser("admin");
+    const { branch } = await createBranch();
+    const bytes = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01,
+    ]);
+    let key: string | undefined;
+    try {
+      const result = await setBranchPhoto(
+        { type: "admin", userId: admin.id },
+        {
+          branchId: branch.id,
+          upload: { bytes, mime: "image/png" },
+        },
+        database,
+      );
+      expect(result.imageUrl).toMatch(
+        /^\/api\/photos\/[0-9a-f-]{36}\.png$/,
+      );
+      const photoKey = result.imageUrl!.slice("/api/photos/".length);
+      key = photoKey;
+      const [uploaded] = await database
+        .select({ imageUrl: branches.imageUrl })
+        .from(branches)
+        .where(eq(branches.id, branch.id));
+      expect(uploaded?.imageUrl).toBe(result.imageUrl);
+      expect(await readPublicPhoto(photoKey)).toEqual(Buffer.from(bytes));
+
+      await setBranchPhoto(
+        { type: "admin", userId: admin.id },
+        { branchId: branch.id, upload: null },
+        database,
+      );
+      const [updated] = await database
+        .select({ imageUrl: branches.imageUrl })
+        .from(branches)
+        .where(eq(branches.id, branch.id));
+      expect(updated?.imageUrl).toBeNull();
+      await expect(readPublicPhoto(photoKey)).rejects.toThrow();
+    } finally {
+      if (key) await deletePublicPhoto(key);
+    }
+  });
+
+  it("rejects non-admin actors", async () => {
+    const user = await createUser();
+    const { branch } = await createBranch();
+    await expect(
+      setBranchPhoto(
+        { type: "user", userId: user.id },
+        { branchId: branch.id, upload: null },
+        database,
+      ),
+    ).rejects.toThrow("Administrator access required");
+  });
+
+  it("rejects PDFs and mismatched image MIME types", async () => {
+    const admin = await createUser("admin");
+    const { branch } = await createBranch();
+    const actor = { type: "admin" as const, userId: admin.id };
+    await expect(
+      setBranchPhoto(
+        actor,
+        {
+          branchId: branch.id,
+          upload: {
+            bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+            mime: "application/pdf",
+          },
+        },
+        database,
+      ),
+    ).rejects.toThrow("Upload type does not match its file signature");
+    await expect(
+      setBranchPhoto(
+        actor,
+        {
+          branchId: branch.id,
+          upload: {
+            bytes: new Uint8Array([
+              0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            ]),
+            mime: "image/jpeg",
+          },
+        },
+        database,
+      ),
+    ).rejects.toThrow("Upload type does not match its file signature");
+  });
+
+  it("enforces the daily and per-IP Google photo limits", async () => {
+    const originalLimit = process.env.GOOGLE_PLACES_PHOTO_DAILY_LIMIT;
+    process.env.GOOGLE_PLACES_PHOTO_DAILY_LIMIT = "30";
+    const now = new Date("2026-05-19T12:00:00.000Z");
+    try {
+      for (let index = 1; index <= 30; index++) {
+        expect(
+          await consumeGooglePhotoLimit(
+            database,
+            `192.0.2.${index}`,
+            now,
+          ),
+        ).toBe(true);
+      }
+      expect(
+        await consumeGooglePhotoLimit(database, "192.0.2.31", now),
+      ).toBe(false);
+
+      const perIpNow = new Date("2026-05-20T12:00:00.000Z");
+      for (let index = 0; index < 10; index++) {
+        expect(
+          await consumeGooglePhotoLimit(database, "198.51.100.1", perIpNow),
+        ).toBe(true);
+      }
+      expect(
+        await consumeGooglePhotoLimit(database, "198.51.100.1", perIpNow),
+      ).toBe(false);
+    } finally {
+      if (originalLimit === undefined) {
+        delete process.env.GOOGLE_PLACES_PHOTO_DAILY_LIMIT;
+      } else {
+        process.env.GOOGLE_PLACES_PHOTO_DAILY_LIMIT = originalLimit;
+      }
+    }
   });
 });
 

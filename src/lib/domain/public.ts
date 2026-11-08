@@ -24,6 +24,7 @@ import {
 } from "@/db/schema";
 import type { BusinessCategory, ResearchStatus } from "@/lib/shared/types";
 import { getPlacesProvider } from "@/lib/providers/places";
+import type { PlaceDetails } from "@/lib/providers/places/types";
 import { consumeGoogleDetailsLimit } from "@/lib/providers/places/limits";
 
 const publicBranchColumns = {
@@ -277,10 +278,14 @@ type HydratableBranch = {
   attribution: boolean;
 };
 
+type HydratedBranch<T extends HydratableBranch> = T & {
+  googlePhoto?: PlaceDetails["photo"] | null;
+};
+
 export async function hydrateProviderBranches<T extends HydratableBranch>(
   rows: readonly T[],
   database: typeof defaultDb = defaultDb,
-): Promise<T[]> {
+): Promise<HydratedBranch<T>[]> {
   const providerRows = rows.filter((row) => row.detailsSource === "provider");
   if (!providerRows.length) return [...rows];
   const branchIds = providerRows.map((row) => row.id);
@@ -297,7 +302,7 @@ export async function hydrateProviderBranches<T extends HydratableBranch>(
   );
   const provider = getPlacesProvider();
   return Promise.all(
-    rows.map(async (row) => {
+    rows.map(async (row): Promise<HydratedBranch<T>> => {
       if (row.detailsSource !== "provider") return row;
       const externalPlace = placeIdByBranch.get(row.id);
       if (
@@ -312,6 +317,7 @@ export async function hydrateProviderBranches<T extends HydratableBranch>(
           address: "Place details unavailable",
           city: "",
           attribution: externalPlace?.provider === "google",
+          googlePhoto: null,
         };
       }
       try {
@@ -327,6 +333,7 @@ export async function hydrateProviderBranches<T extends HydratableBranch>(
           address: details.formattedAddress,
           city: "",
           attribution: externalPlace.provider === "google",
+          googlePhoto: details.photo ?? null,
         };
       } catch {
         return {
@@ -336,6 +343,7 @@ export async function hydrateProviderBranches<T extends HydratableBranch>(
           address: "Place details unavailable",
           city: "",
           attribution: externalPlace.provider === "google",
+          googlePhoto: null,
         };
       }
     }),
