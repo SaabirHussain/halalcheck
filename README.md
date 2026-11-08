@@ -30,7 +30,8 @@ Mount a volume at `/data` and set `STORAGE_DIR=/data/storage`.
 
 Set `DATABASE_URL` to the Postgres service reference (for example,
 `${{Postgres.DATABASE_URL}}`), `APP_URL` to the public HTTPS URL, and
-`DEMO_MODE=false`. Configure `PLACES_PROVIDER`, `GEOCODER_PROVIDER`,
+`APP_ALLOWED_ORIGINS` to any additional comma-separated browser origins, if
+needed. Set `DEMO_MODE=false`. Configure `PLACES_PROVIDER`, `GEOCODER_PROVIDER`,
 `AI_PROVIDER`, `EMAIL_PROVIDER`, and `PUSH_PROVIDER` with the matching
 credentials when those integrations are approved; do not use the demo Places
 provider for real listings. Keep `OUTREACH_ALLOW_REAL_SEND=false` until
@@ -261,6 +262,7 @@ values are public and are embedded in the client.
 | `DATABASE_URL`             | Application PostgreSQL connection.                         |
 | `TEST_DATABASE_URL`        | Isolated PostgreSQL database used by integration tests.    |
 | `APP_URL`                  | Canonical application URL for links and callbacks.         |
+| `APP_ALLOWED_ORIGINS`      | Optional comma-separated additional browser origins.       |
 | `DEMO_MODE`                | Enables fictional demo fixtures and demo-only behavior.    |
 | `QUEUE_DRIVER`             | Queue adapter selection (`pg-boss` in normal local setup). |
 | `REFRESH_AFTER_DAYS`       | Age threshold for considering published research stale.    |
