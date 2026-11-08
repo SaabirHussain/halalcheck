@@ -10,7 +10,6 @@ android/temporary-maven-mirror.init.gradle
 ios/App/Pods/
 ios/App/build/
 ios/DerivedData/
-mobile/www/offline.html
 .env
 .env.local
 coverage/
@@ -19,3 +18,4 @@ coverage/
 tsconfig.tsbuildinfo
 test-results/
 playwright-report/
+mobile/www/offline.html

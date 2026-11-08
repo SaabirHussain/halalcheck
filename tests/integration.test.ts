@@ -586,6 +586,41 @@ describe("public discovery", () => {
     }
   });
 
+  it("skips provider searches and rate limits when browser-gated", async () => {
+    const originalProvider = process.env.PLACES_PROVIDER;
+    const originalKey = process.env.GOOGLE_PLACES_API_KEY;
+    process.env.PLACES_PROVIDER = "google";
+    process.env.GOOGLE_PLACES_API_KEY = "stub-key";
+    const searchNearby = vi.fn(async () => {
+      throw new Error("Provider must not be called.");
+    });
+    try {
+      const result = await searchAndCacheProviderPlaces(
+        { lat: 43.65, lng: -79.38, radiusKm: 20 },
+        "203.0.113.8",
+        database,
+        new Date(),
+        {
+          searchNearby,
+          async getPlace() {
+            return null;
+          },
+        },
+        false,
+      );
+
+      expect(result.overlay.size).toBe(0);
+      expect(result.notice).toBeUndefined();
+      expect(searchNearby).not.toHaveBeenCalled();
+      expect(await database.select().from(rateLimits)).toHaveLength(0);
+    } finally {
+      if (originalProvider === undefined) delete process.env.PLACES_PROVIDER;
+      else process.env.PLACES_PROVIDER = originalProvider;
+      if (originalKey === undefined) delete process.env.GOOGLE_PLACES_API_KEY;
+      else process.env.GOOGLE_PLACES_API_KEY = originalKey;
+    }
+  });
+
   it("uses the configured Toronto center for a no-location Google search", async () => {
     const originalProvider = process.env.PLACES_PROVIDER;
     const originalKey = process.env.GOOGLE_PLACES_API_KEY;
@@ -998,6 +1033,45 @@ describe("investigation reconciliation", () => {
       runs.find((run) => run.status === "queued")?.singletonKey,
     ).toBe(singletonKey);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("only reconciles evidence review when no pending proposal exists", async () => {
+    const pendingBranch = await createBranch();
+    const pendingInvestigation = await createInvestigation(
+      pendingBranch.branch.id,
+    );
+    const noProposalBranch = await createBranch();
+    const noProposalInvestigation = await createInvestigation(
+      noProposalBranch.branch.id,
+    );
+    for (const investigation of [pendingInvestigation, noProposalInvestigation]) {
+      await database
+        .update(investigations)
+        .set({ status: "reviewing_evidence", paused: false })
+        .where(eq(investigations.id, investigation.id));
+    }
+    await database.insert(proposedUpdates).values({
+      branchId: pendingBranch.branch.id,
+      investigationId: pendingInvestigation.id,
+      status: "pending",
+      publicSummary: "Pending review.",
+    });
+
+    const { queue, calls } = queueRecorder();
+    expect(
+      await reconcileInvestigations(
+        { type: "worker" },
+        queue,
+        database,
+        new Date(),
+      ),
+    ).toBe(1);
+    expect(calls).toEqual([
+      {
+        name: "investigation.evidence_review",
+        payload: { investigationId: noProposalInvestigation.id },
+      },
+    ]);
   });
 
   it("shares public-research singleton keys between reconcile and other callers", async () => {
@@ -4116,6 +4190,55 @@ describe("publication notifications and fixture coverage", () => {
       budgetAiCallsUsed: 0,
     });
     expect(unchanged!.stageDetail).not.toBe("No usable business contact found.");
+  });
+
+  it("sends third-party listing websites to evidence review without fetching them", async () => {
+    const { investigation } = await createGoogleProviderInvestigation();
+    const placesProvider: PlacesProvider = {
+      async searchNearby() {
+        return [];
+      },
+      async getPlace(externalId) {
+        return {
+          id: externalId,
+          displayName: "Sultan's",
+          formattedAddress: "10 Demo Street, Demo City",
+          location: { latitude: 43.65, longitude: -79.38 },
+          types: ["restaurant"],
+          websiteUri: "https://order.online/store/abc",
+        };
+      },
+    };
+    const fetch = vi.fn(async (url: string) => {
+      throw new Error(`Unexpected website fetch: ${url}`);
+    });
+    const { queue, calls } = queueRecorder();
+    const handler = buildJobHandlers(database, queue, {
+      aiProvider: new DemoAIProvider(),
+      placesProvider,
+      fetcher: { fetch },
+    })["investigation.public_research"]!;
+
+    await handler(
+      { investigationId: investigation.id },
+      { jobId: "third-party-website", attempt: 1 },
+    );
+
+    expect(
+      fetch.mock.calls.some(([url]) => url.includes("order.online")),
+    ).toBe(false);
+    const [updated] = await database
+      .select()
+      .from(investigations)
+      .where(eq(investigations.id, investigation.id));
+    expect(updated).toMatchObject({
+      status: "reviewing_evidence",
+      stageDetail: "No usable business contact found.",
+    });
+    expect(calls).toContainEqual({
+      name: "investigation.evidence_review",
+      payload: { investigationId: investigation.id },
+    });
   });
 
   it("deduplicates notifications for every follower", async () => {

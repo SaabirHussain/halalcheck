@@ -1,6 +1,13 @@
 import UIKit
 import Capacitor
 
+class MainViewController: CAPBridgeViewController {
+    override func capacitorDidLoad() {
+        super.capacitorDidLoad()
+        webView?.allowsBackForwardNavigationGestures = true
+    }
+}
+
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
 
@@ -20,11 +27,5 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
         SceneDelegateProxy.shared.scene(scene, continue: userActivity)
-    }
-}
-
-class MainViewController: CAPBridgeViewController {
-    override func capacitorDidLoad() {
-        webView?.allowsBackForwardNavigationGestures = true
     }
 }

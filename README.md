@@ -30,7 +30,8 @@ Mount a volume at `/data` and set `STORAGE_DIR=/data/storage`.
 
 Set `DATABASE_URL` to the Postgres service reference (for example,
 `${{Postgres.DATABASE_URL}}`), `APP_URL` to the public HTTPS URL, and
-`DEMO_MODE=false`. Configure `PLACES_PROVIDER`, `GEOCODER_PROVIDER`,
+`APP_ALLOWED_ORIGINS` to any additional comma-separated browser origins, if
+needed. Set `DEMO_MODE=false`. Configure `PLACES_PROVIDER`, `GEOCODER_PROVIDER`,
 `AI_PROVIDER`, `EMAIL_PROVIDER`, and `PUSH_PROVIDER` with the matching
 credentials when those integrations are approved; do not use the demo Places
 provider for real listings. Keep `OUTREACH_ALLOW_REAL_SEND=false` until
@@ -261,6 +262,7 @@ values are public and are embedded in the client.
 | `DATABASE_URL`             | Application PostgreSQL connection.                         |
 | `TEST_DATABASE_URL`        | Isolated PostgreSQL database used by integration tests.    |
 | `APP_URL`                  | Canonical application URL for links and callbacks.         |
+| `APP_ALLOWED_ORIGINS`      | Optional comma-separated additional browser origins.       |
 | `DEMO_MODE`                | Enables fictional demo fixtures and demo-only behavior.    |
 | `QUEUE_DRIVER`             | Queue adapter selection (`pg-boss` in normal local setup). |
 | `REFRESH_AFTER_DAYS`       | Age threshold for considering published research stale.    |
@@ -371,12 +373,13 @@ server; this application uses server rendering, server actions, and database
 sessions and therefore is not a static export. `capacitor.config.ts` reads
 `CAP_SERVER_URL` when Capacitor sync runs. It defaults to
 `http://10.0.2.2:3000` for the Android emulator to reach the host machine.
+The offline page is generated from `CAP_SERVER_URL` on every Capacitor copy or
+sync, so set this variable for real builds.
 Use an HTTPS URL for a hosted environment. Capacitor's `server.cleartext` is
 enabled only when this URL uses HTTP; on Android, Capacitor sync generates the
 corresponding application-level cleartext setting rather than requiring a
 manual manifest flag. `server.errorPath` points to the bundled
-`mobile/www/offline.html`, which `capacitor.config.ts` regenerates from
-`offline.template.html` on every sync so Retry opens the configured server URL.
+`mobile/www/offline.html`; Retry opens the configured server URL.
 
 Install the matching Android SDK platform/build tools and JDK 21 or newer,
 then run:
@@ -403,11 +406,11 @@ CAP_SERVER_URL=https://halalcheck.example npm run cap:sync
 ```
 
 On a Mac with Xcode installed, run
-`CAP_SERVER_URL=https://halalcheck.example npx cap sync ios` and open
-`ios/App/App.xcodeproj` in Xcode to build and sign the iOS app. iOS builds and
-signing cannot be completed on Linux. Store release requires a hosted HTTPS
-server and Apple/Google developer accounts; neither release nor account setup
-is performed by this project workflow.
+`CAP_SERVER_URL=<url> npm run cap:sync` and open `ios/App/App.xcodeproj` in Xcode
+to build and sign the iOS app. iOS builds and signing cannot be completed on
+Linux. iOS supports edge-swipe back and forward navigation. Store release
+requires a hosted HTTPS server and Apple/Google developer accounts; neither
+release nor account setup is performed by this project workflow.
 
 The app uses native location permission/geolocation, system browser handling
 for external links, Android hardware-back navigation, status-bar and splash

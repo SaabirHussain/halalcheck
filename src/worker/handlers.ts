@@ -27,7 +27,10 @@ import {
   waitingForAutomaticBusinessDetails,
 } from "@/lib/domain/admin";
 import { addressesMatch } from "@/lib/domain/address-match";
-import { classifyBusinessEmails } from "@/lib/domain/contact-classification";
+import {
+  classifyBusinessEmails,
+  isThirdPartyListingUrl,
+} from "@/lib/domain/contact-classification";
 import {
   isSiteUrlAlreadyFetched,
   selectSameSiteLinks,
@@ -122,6 +125,7 @@ export function buildJobHandlers(
         }
         if (!details) throw new Error("Google Places returned no details.");
         website = details.websiteUri ?? null;
+        if (website && isThirdPartyListingUrl(website)) website = null;
         googleFormattedAddress = details.formattedAddress ?? null;
       }
       const domain = website ? new URL(website).hostname : "";
