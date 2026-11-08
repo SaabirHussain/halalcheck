@@ -4,7 +4,9 @@ import type { DiscoveryFilterState } from "@/components/discovery/filter-types";
 import { listPublicBranches } from "@/lib/domain/public";
 import { searchAndCacheProviderPlaces } from "@/lib/domain/provider-places";
 import { getClientIp } from "@/lib/http/client-ip";
+import { allowProviderSearch } from "@/lib/http/browser-gate";
 import { db } from "@/db";
+import { BrowserGate } from "./browser-gate";
 import {
   businessCategories,
   researchStatuses,
@@ -60,6 +62,7 @@ export default async function HomePage({
     lng: lat !== undefined && lng !== undefined ? lng : undefined,
     area: getValue(params, "area")?.slice(0, 100) ?? "Demo City",
   };
+  const requestHeaders = await headers();
   const providerSearch = await searchAndCacheProviderPlaces(
     {
       ...initialFilters,
@@ -68,8 +71,11 @@ export default async function HomePage({
           ? undefined
           : initialFilters.certified === "true",
     },
-    getClientIp(await headers()),
+    getClientIp(requestHeaders),
     db,
+    undefined,
+    undefined,
+    allowProviderSearch(requestHeaders),
   );
   initialFilters.lat = providerSearch.filters.lat;
   initialFilters.lng = providerSearch.filters.lng;
@@ -100,10 +106,13 @@ export default async function HomePage({
   });
 
   return (
-    <DiscoveryExplorer
-      initialFilters={initialFilters}
-      notice={providerSearch.notice}
-      places={places}
-    />
+    <>
+      <BrowserGate />
+      <DiscoveryExplorer
+        initialFilters={initialFilters}
+        notice={providerSearch.notice}
+        places={places}
+      />
+    </>
   );
 }
