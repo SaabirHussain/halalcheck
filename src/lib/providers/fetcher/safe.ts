@@ -9,6 +9,7 @@ import type { FetchedPage, SafeFetcher } from "./types";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
+const FETCH_TIMEOUT_MS = 20_000;
 
 function ipv4ToNumber(ip: string) {
   return ip.split(".").reduce((total, part) => total * 256 + Number(part), 0);
@@ -271,7 +272,7 @@ export class SSRFSafeFetcher implements SafeFetcher {
         response = await this.fetchImpl(validated, {
           dispatcher,
           redirect: "manual",
-          signal: AbortSignal.timeout(10_000),
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
           headers: {
             "User-Agent": "HalalCheck research bot (community directory)",
           },
