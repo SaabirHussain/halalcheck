@@ -373,6 +373,8 @@ server; this application uses server rendering, server actions, and database
 sessions and therefore is not a static export. `capacitor.config.ts` reads
 `CAP_SERVER_URL` when Capacitor sync runs. It defaults to
 `http://10.0.2.2:3000` for the Android emulator to reach the host machine.
+The offline page is generated from `CAP_SERVER_URL` on every Capacitor copy or
+sync, so set this variable for real builds.
 Use an HTTPS URL for a hosted environment. Capacitor's `server.cleartext` is
 enabled only when this URL uses HTTP; on Android, Capacitor sync generates the
 corresponding application-level cleartext setting rather than requiring a
@@ -403,11 +405,12 @@ a different server, for example:
 CAP_SERVER_URL=https://halalcheck.example npm run cap:sync
 ```
 
-On a Mac with Xcode installed, run `npx cap sync ios` and open
-`ios/App/App.xcodeproj` in Xcode to build and sign the iOS app. iOS builds and
-signing cannot be completed on Linux. Store release requires a hosted HTTPS
-server and Apple/Google developer accounts; neither release nor account setup
-is performed by this project workflow.
+On a Mac with Xcode installed, run
+`CAP_SERVER_URL=<url> npm run cap:sync` and open `ios/App/App.xcodeproj` in Xcode
+to build and sign the iOS app. iOS builds and signing cannot be completed on
+Linux. iOS supports edge-swipe back and forward navigation. Store release
+requires a hosted HTTPS server and Apple/Google developer accounts; neither
+release nor account setup is performed by this project workflow.
 
 The app uses native location permission/geolocation, system browser handling
 for external links, Android hardware-back navigation, status-bar and splash

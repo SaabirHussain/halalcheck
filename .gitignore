@@ -18,3 +18,4 @@ coverage/
 tsconfig.tsbuildinfo
 test-results/
 playwright-report/
+mobile/www/offline.html
