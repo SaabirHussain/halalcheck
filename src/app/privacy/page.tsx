@@ -1,3 +1,4 @@
+import { WebOnly } from "@/components/layout/SupportLink";
 import { supportUrl } from "@/lib/support";
 
 export default function PrivacyPage() {
@@ -13,13 +14,12 @@ export default function PrivacyPage() {
         <section>
           <h2 className="font-semibold">Information we handle</h2>
           <p className="mt-1">
-            HalalCheck handles account email addresses, password hashes,
-            display names, account settings, saved places, research requests,
-            follows, corrections, and evidence files you upload. We also
-            process public business websites and sources, research findings,
-            and correspondence with businesses. Requests to sign in, search,
-            or use protected features may include an IP address for security
-            and rate limiting.
+            HalalCheck handles account email addresses, password hashes, display
+            names, account settings, saved places, research requests, follows,
+            corrections, and evidence files you upload. We also process public
+            business websites and sources, research findings, and correspondence
+            with businesses. Requests to sign in, search, or use protected
+            features may include an IP address for security and rate limiting.
           </p>
         </section>
         <section>
@@ -27,8 +27,8 @@ export default function PrivacyPage() {
           <p className="mt-1">
             Findings and public-source citations may be published after
             administrator review. Business outreach, replies, account records,
-            uploaded evidence, and internal review notes are private and are
-            not automatically published. A business response may be summarized
+            uploaded evidence, and internal review notes are private and are not
+            automatically published. A business response may be summarized
             publicly with its source and date when reviewed and approved.
           </p>
         </section>
@@ -93,14 +93,16 @@ export default function PrivacyPage() {
           </p>
         </section>
         {donateUrl ? (
-          <section>
-            <h2 className="font-semibold">Donations</h2>
-            <p className="mt-1">
-              If you donate through Ko-fi, Ko-fi and its payment processors
-              collect and process your payment details under their own privacy
-              policies. HalalCheck does not receive your card details.
-            </p>
-          </section>
+          <WebOnly>
+            <section>
+              <h2 className="font-semibold">Donations</h2>
+              <p className="mt-1">
+                If you donate through Ko-fi, Ko-fi and its payment processors
+                collect and process your payment details under their own privacy
+                policies. HalalCheck does not receive your card details.
+              </p>
+            </section>
+          </WebOnly>
         ) : null}
       </div>
     </main>

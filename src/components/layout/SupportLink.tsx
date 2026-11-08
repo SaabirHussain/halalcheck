@@ -2,19 +2,33 @@
 
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { isNativeApp } from "@/lib/native/platform";
 
-function useWebVisibility() {
-  const [visible, setVisible] = useState(false);
+function usePlatform() {
+  const [platform, setPlatform] = useState<"web" | "native" | null>(null);
   useEffect(() => {
-    setVisible(!isNativeApp());
+    setPlatform(isNativeApp() ? "native" : "web");
   }, []);
-  return visible;
+  return platform;
+}
+
+function useWebVisibility() {
+  return usePlatform() === "web";
 }
 
 export function WebOnly({ children }: { children: ReactNode }) {
   const visible = useWebVisibility();
   return visible ? <>{children}</> : null;
+}
+
+export function WebOnlyPage({ children }: { children: ReactNode }) {
+  const platform = usePlatform();
+  const router = useRouter();
+  useEffect(() => {
+    if (platform === "native") router.replace("/");
+  }, [platform, router]);
+  return platform === "web" ? <>{children}</> : null;
 }
 
 export function SupportLink({

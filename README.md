@@ -375,7 +375,8 @@ Use an HTTPS URL for a hosted environment. Capacitor's `server.cleartext` is
 enabled only when this URL uses HTTP; on Android, Capacitor sync generates the
 corresponding application-level cleartext setting rather than requiring a
 manual manifest flag. `server.errorPath` points to the bundled
-`mobile/www/offline.html`; Retry opens the configured server URL.
+`mobile/www/offline.html`, which `capacitor.config.ts` regenerates from
+`offline.template.html` on every sync so Retry opens the configured server URL.
 
 Install the matching Android SDK platform/build tools and JDK 21 or newer,
 then run:
@@ -401,7 +402,8 @@ a different server, for example:
 CAP_SERVER_URL=https://halalcheck.example npm run cap:sync
 ```
 
-On a Mac with Xcode installed, run `npx cap sync ios` and open
+On a Mac with Xcode installed, run
+`CAP_SERVER_URL=https://halalcheck.example npx cap sync ios` and open
 `ios/App/App.xcodeproj` in Xcode to build and sign the iOS app. iOS builds and
 signing cannot be completed on Linux. Store release requires a hosted HTTPS
 server and Apple/Google developer accounts; neither release nor account setup
