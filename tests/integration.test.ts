@@ -586,6 +586,41 @@ describe("public discovery", () => {
     }
   });
 
+  it("skips provider searches and rate limits when browser-gated", async () => {
+    const originalProvider = process.env.PLACES_PROVIDER;
+    const originalKey = process.env.GOOGLE_PLACES_API_KEY;
+    process.env.PLACES_PROVIDER = "google";
+    process.env.GOOGLE_PLACES_API_KEY = "stub-key";
+    const searchNearby = vi.fn(async () => {
+      throw new Error("Provider must not be called.");
+    });
+    try {
+      const result = await searchAndCacheProviderPlaces(
+        { lat: 43.65, lng: -79.38, radiusKm: 20 },
+        "203.0.113.8",
+        database,
+        new Date(),
+        {
+          searchNearby,
+          async getPlace() {
+            return null;
+          },
+        },
+        false,
+      );
+
+      expect(result.overlay.size).toBe(0);
+      expect(result.notice).toBeUndefined();
+      expect(searchNearby).not.toHaveBeenCalled();
+      expect(await database.select().from(rateLimits)).toHaveLength(0);
+    } finally {
+      if (originalProvider === undefined) delete process.env.PLACES_PROVIDER;
+      else process.env.PLACES_PROVIDER = originalProvider;
+      if (originalKey === undefined) delete process.env.GOOGLE_PLACES_API_KEY;
+      else process.env.GOOGLE_PLACES_API_KEY = originalKey;
+    }
+  });
+
   it("uses the configured Toronto center for a no-location Google search", async () => {
     const originalProvider = process.env.PLACES_PROVIDER;
     const originalKey = process.env.GOOGLE_PLACES_API_KEY;

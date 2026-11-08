@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { listPublicBranches } from "@/lib/domain/public";
 import { searchAndCacheProviderPlaces } from "@/lib/domain/provider-places";
+import { allowProviderSearch } from "@/lib/http/browser-gate";
 import { getClientIp } from "@/lib/http/client-ip";
 import { businessCategories, researchStatuses } from "@/lib/shared/types";
 import { z } from "zod";
@@ -55,6 +56,9 @@ export async function GET(request: Request) {
       filters,
       getClientIp(request.headers),
       db,
+      undefined,
+      undefined,
+      allowProviderSearch(request.headers),
     );
     const rows = await listPublicBranches(
       providerSearch.filters,

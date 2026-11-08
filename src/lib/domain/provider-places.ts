@@ -46,6 +46,7 @@ export async function searchAndCacheProviderPlaces(
   database: Database = defaultDb,
   now = new Date(),
   provider: PlacesProvider = getPlacesProvider(),
+  allowProvider = true,
 ): Promise<ProviderSearchResult> {
   const effectiveFilters = { ...filters };
   if (
@@ -58,6 +59,7 @@ export async function searchAndCacheProviderPlaces(
   }
 
   const overlay: ProviderPlaceOverlay = new Map();
+  if (!allowProvider) return { filters: effectiveFilters, overlay };
   if (effectiveFilters.lat == null || effectiveFilters.lng == null) {
     return { filters: effectiveFilters, overlay };
   }
