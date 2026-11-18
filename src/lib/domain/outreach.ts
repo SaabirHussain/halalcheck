@@ -388,11 +388,27 @@ export async function createOutreachDraft(
           ? "Could you connect us with a manager or purchasing contact who can confirm the details?"
           : null
     : null;
+  const hasInboundReply = isFollowup
+    ? (
+        await database
+          .select({ id: outreachMessages.id })
+          .from(outreachMessages)
+          .where(
+            and(
+              eq(outreachMessages.threadId, threadId),
+              eq(outreachMessages.direction, "inbound"),
+            ),
+          )
+          .limit(1)
+      ).length > 0
+    : false;
   const bodyText = [
     `Hello,`,
     ``,
     isFollowup
-      ? `Thank you for your reply about ${investigation.businessName} (${investigation.branchName}).`
+      ? hasInboundReply
+        ? `Thank you for your reply about ${investigation.businessName} (${investigation.branchName}).`
+        : `Following up on our earlier message about ${investigation.businessName} (${investigation.branchName}). We’d still appreciate a few details:`
       : `I’m an automated research assistant on behalf of HalalCheck, a community research directory. We are reviewing ${investigation.businessName} (${investigation.branchName}) and would appreciate a few details:`,
     ...(targetedIntro ? [targetedIntro, ""] : []),
     ...selectedQuestions.map((question) => `• ${question.prompt}`),

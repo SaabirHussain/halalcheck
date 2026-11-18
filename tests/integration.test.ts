@@ -2052,6 +2052,17 @@ describe("webhooks, opt-outs, and outreach", () => {
       database,
       queue,
     );
+    const [followupMessage] = await database
+      .select({ bodyText: outreachMessages.bodyText })
+      .from(outreachMessages)
+      .where(eq(outreachMessages.id, followup.messageId!));
+    expect(followupMessage!.bodyText).toContain(
+      "Following up on our earlier message",
+    );
+    expect(followupMessage!.bodyText).toContain("We’d still appreciate");
+    expect(followupMessage!.bodyText).not.toContain(
+      "Thank you for your reply",
+    );
     await approveOutreachMessage(
       { type: "admin", userId: admin.id },
       followup.messageId!,
@@ -4713,6 +4724,7 @@ describe("publication notifications and fixture coverage", () => {
       .where(eq(outreachMessages.threadId, thread!.id));
     const followup = messages.find((message) => message.kind === "followup");
     expect(followup).toBeTruthy();
+    expect(followup!.bodyText).toContain("Thank you for your reply");
     expect(followup!.bodyText).toContain(
       "Thank you — you mentioned your meat is halal.",
     );
