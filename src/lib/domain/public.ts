@@ -3,9 +3,11 @@ import {
   count,
   desc,
   eq,
+  exists,
   gte,
   ilike,
   inArray,
+  isNotNull,
   lte,
   or,
 } from "drizzle-orm";
@@ -19,6 +21,8 @@ import {
   investigationSubscriptions,
   investigations,
   externalPlaceIds,
+  outreachMessages,
+  outreachThreads,
   publishedRevisions,
   sources,
 } from "@/db/schema";
@@ -101,6 +105,22 @@ export async function getPublicBranch(
       id: investigations.id,
       status: investigations.status,
       stageDetail: investigations.stageDetail,
+      businessContacted: exists(
+        database
+          .select({ id: outreachMessages.id })
+          .from(outreachMessages)
+          .innerJoin(
+            outreachThreads,
+            eq(outreachMessages.threadId, outreachThreads.id),
+          )
+          .where(
+            and(
+              eq(outreachThreads.investigationId, investigations.id),
+              eq(outreachMessages.direction, "outbound"),
+              isNotNull(outreachMessages.sentAt),
+            ),
+          ),
+      ).mapWith(Boolean),
     })
     .from(investigations)
     .where(
@@ -239,6 +259,7 @@ export async function getPublicBranch(
           id: activeInvestigation.id,
           status: activeInvestigation.status,
           followerCount: activeFollowerCount?.value ?? 0,
+          businessContacted: activeInvestigation.businessContacted,
         }
       : null,
     unansweredQuestions,

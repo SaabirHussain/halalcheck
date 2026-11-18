@@ -74,7 +74,10 @@ export class PgBossQueue implements JobQueue {
       jobId = await this.boss.send(name, payload, {
         retryLimit: 3,
         retryBackoff: true,
-        startAfter: options.startAfter,
+        startAfter:
+          typeof options.startAfter === "number"
+            ? new Date(Date.now() + options.startAfter)
+            : options.startAfter,
       });
     } catch (error) {
       await this.database

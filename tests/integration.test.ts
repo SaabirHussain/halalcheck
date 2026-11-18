@@ -1445,6 +1445,44 @@ describe("investigation reconciliation", () => {
   });
 });
 
+describe("PgBossQueue startAfter", () => {
+  it("converts millisecond delays and preserves Date and undefined values", async () => {
+    const sends: Array<{ startAfter?: Date | number }> = [];
+    const boss = {
+      send: vi.fn(
+        async (
+          _name: string,
+          _payload: Record<string, unknown>,
+          options?: { startAfter?: Date | number },
+        ) => {
+          sends.push(options ?? {});
+          return `fake-job-${sends.length}`;
+        },
+      ),
+    } as unknown as PgBoss;
+    const queue = new DurableQueue(boss, database);
+    const delay = 7 * 86400_000;
+    const before = Date.now();
+
+    await queue.enqueue("test.delay", {}, { startAfter: delay });
+    const numericStartAfter = sends[0]!.startAfter;
+    expect(numericStartAfter).toBeInstanceOf(Date);
+    expect((numericStartAfter as Date).getTime()).toBeGreaterThanOrEqual(
+      before + delay - 60_000,
+    );
+    expect((numericStartAfter as Date).getTime()).toBeLessThanOrEqual(
+      before + delay + 60_000,
+    );
+
+    const scheduledFor = new Date("2030-01-02T03:04:05.000Z");
+    await queue.enqueue("test.date", {}, { startAfter: scheduledFor });
+    expect(sends[1]!.startAfter).toBe(scheduledFor);
+
+    await queue.enqueue("test.now", {});
+    expect(sends[2]!.startAfter).toBeUndefined();
+  });
+});
+
 describe("research requests and authorization", () => {
   it("deduplicates 25 concurrent requests, subscribes distinct users once, and queues once", async () => {
     const { branch } = await createBranch();
@@ -1612,6 +1650,50 @@ describe("research requests and authorization", () => {
       ),
     ).toBeNull();
     expect(send).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe("public outreach tracker", () => {
+  it("reports whether an outbound message has actually been sent", async () => {
+    const { branch } = await createBranch();
+    const investigation = await createInvestigation(branch.id);
+    await database
+      .update(investigations)
+      .set({ status: "reviewing_evidence" })
+      .where(eq(investigations.id, investigation.id));
+    const [thread] = await database
+      .insert(outreachThreads)
+      .values({
+        investigationId: investigation.id,
+        branchId: branch.id,
+        threadToken: `tracker-${randomUUID()}`,
+      })
+      .returning();
+    const [message] = await database
+      .insert(outreachMessages)
+      .values({
+        threadId: thread!.id,
+        direction: "outbound",
+        sequence: 1,
+        kind: "initial",
+        subject: "Private outreach subject",
+        bodyText: "Private outreach body",
+        idempotencyKey: randomUUID(),
+      })
+      .returning();
+
+    const beforeSent = await getPublicBranch(branch.id, database);
+    expect(beforeSent?.activeInvestigation?.businessContacted).toBe(false);
+    expect(JSON.stringify(beforeSent)).not.toContain("Private outreach");
+
+    await database
+      .update(outreachMessages)
+      .set({ status: "sent", sentAt: new Date() })
+      .where(eq(outreachMessages.id, message!.id));
+
+    const afterSent = await getPublicBranch(branch.id, database);
+    expect(afterSent?.activeInvestigation?.businessContacted).toBe(true);
+    expect(JSON.stringify(afterSent)).not.toContain("Private outreach");
   });
 });
 

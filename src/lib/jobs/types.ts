@@ -1,5 +1,6 @@
 export type EnqueueOptions = {
   singletonKey?: string;
+  // Numeric startAfter values are delays in milliseconds.
   startAfter?: Date | number;
   idempotencyKey?: string;
 };
