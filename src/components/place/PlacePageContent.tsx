@@ -100,7 +100,13 @@ function ClaimValue({
   );
 }
 
-function Stepper({ status }: { status: string }) {
+function Stepper({
+  status,
+  businessContacted,
+}: {
+  status: string;
+  businessContacted: boolean;
+}) {
   const steps = [
     ["queued", "Request received"],
     ["checking_public_sources", "Public research"],
@@ -109,6 +115,8 @@ function Stepper({ status }: { status: string }) {
     ["reviewing_evidence", "Evidence review"],
   ];
   const currentIndex = steps.findIndex(([key]) => key === status);
+  const uncontactedEvidenceReview =
+    status === "reviewing_evidence" && !businessContacted;
 
   return (
     <section className="rounded-card border border-info/20 bg-info-soft p-5">
@@ -117,7 +125,10 @@ function Stepper({ status }: { status: string }) {
       </p>
       <ol className="mt-4 grid gap-3 sm:grid-cols-5">
         {steps.map(([key, label], index) => {
-          const complete = currentIndex >= 0 && index < currentIndex;
+          const skipped =
+            uncontactedEvidenceReview && (index === 2 || index === 3);
+          const complete =
+            !skipped && currentIndex >= 0 && index < currentIndex;
           const active = key === status;
           return (
             <li
@@ -127,23 +138,41 @@ function Stepper({ status }: { status: string }) {
               <span
                 aria-hidden="true"
                 className={`grid size-7 shrink-0 place-items-center rounded-full text-xs font-bold ${
-                  complete || active
-                    ? "bg-info text-white"
-                    : "border border-info/30 bg-surface text-info"
+                  skipped
+                    ? "border border-border bg-surface text-muted"
+                    : complete || active
+                      ? "bg-info text-white"
+                      : "border border-info/30 bg-surface text-info"
                 }`}
               >
-                {complete ? "✓" : index + 1}
+                {skipped ? "–" : complete ? "✓" : index + 1}
               </span>
-              <span className={active ? "font-semibold text-info" : "text-ink"}>
-                {label}
-              </span>
+              <div className="grid gap-0.5">
+                <span
+                  className={
+                    active
+                      ? "font-semibold text-info"
+                      : skipped
+                        ? "text-muted"
+                        : "text-ink"
+                  }
+                >
+                  {label}
+                </span>
+                {skipped ? (
+                  <span className="text-xs text-muted">
+                    {index === 2 ? "No email sent" : "Skipped"}
+                  </span>
+                ) : null}
+              </div>
             </li>
           );
         })}
       </ol>
       <p className="mt-4 text-sm text-ink">
-        Businesses can take days or weeks to reply. We’ll notify people
-        following this research.
+        {uncontactedEvidenceReview
+          ? "We couldn't find a way to email this business, so a reviewer is checking the public evidence. We'll notify people following this research."
+          : "Businesses can take days or weeks to reply. We’ll notify people following this research."}
       </p>
     </section>
   );
@@ -326,7 +355,10 @@ export function PlacePageContent({
 
       {place.activeInvestigation ? (
         <div className="mb-6">
-          <Stepper status={place.activeInvestigation.status} />
+          <Stepper
+            businessContacted={place.activeInvestigation.businessContacted}
+            status={place.activeInvestigation.status}
+          />
         </div>
       ) : null}
 
